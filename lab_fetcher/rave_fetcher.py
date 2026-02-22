@@ -33,7 +33,6 @@ class RAVEFetcher:
 
         all_files = []
 
-        # Only scan unique year/month combinations
         months = pd.period_range(start_time, end_time, freq="M")
 
         for period in months:
@@ -50,8 +49,6 @@ class RAVEFetcher:
                     filename = link.split("/")[-1]
 
                     try:
-                        # Parse start timestamp from filename
-                        # format: _sYYYYMMDDHHMMSSS
                         start_str = filename.split("_s")[1][:14]
                         file_time = pd.to_datetime(
                             start_str,
@@ -69,14 +66,38 @@ class RAVEFetcher:
 
         return sorted(all_files)
 
-    def fetch_range(self, start_time, end_time):
+    @staticmethod
+    def _spatial_subset(ds, lon_min, lon_max, lat_min, lat_max):
+
+        # Build 2-D mask only on cell-center grid
+        mask = (
+            (ds["grid_lont"] >= lon_min) &
+            (ds["grid_lont"] <= lon_max) &
+            (ds["grid_latt"] >= lat_min) &
+            (ds["grid_latt"] <= lat_max)
+        )
+
+        # Drop variables not on (grid_yt, grid_xt)
+        center_vars = [
+            v for v in ds.data_vars
+            if {"grid_yt", "grid_xt"}.issubset(ds[v].dims)
+        ]
+
+        ds_center = ds[center_vars]
+
+        # Apply mask only to center variables
+        ds_subset = ds_center.where(mask, drop=True)
+
+        return ds_subset
+
+
+    def fetch_range(self, start_time, end_time, bbox=None):
+
         files = self._collect_nc_files(start_time, end_time)
 
         print(f"Found {len(files)} remote files matching date range.")
 
         datasets = []
-        downloaded = 0
-        loaded = 0
 
         for file_url in files:
             filename = file_url.split("/")[-1]
@@ -87,19 +108,16 @@ class RAVEFetcher:
                 r = requests.get(file_url)
                 r.raise_for_status()
                 local_file.write_bytes(r.content)
-                downloaded += 1
             else:
                 print(f"Using cached file: {filename}")
 
-            try:
-                ds = xr.open_dataset(local_file)
-                datasets.append(ds)
-                loaded += 1
-            except Exception as e:
-                print(f"Skipping {filename}: {e}")
+            ds = xr.open_dataset(local_file)
 
-        print(f"Downloaded: {downloaded}")
-        print(f"Loaded into xarray: {loaded}")
+            if bbox is not None:
+                lon_min, lon_max, lat_min, lat_max = bbox
+                ds = self._spatial_subset(ds, lon_min, lon_max, lat_min, lat_max)
+
+            datasets.append(ds)
 
         if not datasets:
             raise RuntimeError("No RAVE files found.")
@@ -107,4 +125,3 @@ class RAVEFetcher:
         combined = xr.concat(datasets, dim="time")
 
         return combined
-
