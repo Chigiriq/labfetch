@@ -2,7 +2,7 @@ from herbie import Herbie
 import pandas as pd
 import xarray as xr
 from pathlib import Path
-
+import numpy as np
 
 class HRRRFetcher:
     DEFAULT_VARS = [
@@ -30,13 +30,29 @@ class HRRRFetcher:
 
     @staticmethod
     def _spatial_subset(ds, lon_min, lon_max, lat_min, lat_max):
-        return ds.where(
+
+        # Handle 0–360 longitude convention automatically
+        if ds.longitude.max() > 180:
+            lon_min = lon_min % 360
+            lon_max = lon_max % 360
+
+        mask = (
             (ds.longitude >= lon_min) &
             (ds.longitude <= lon_max) &
             (ds.latitude >= lat_min) &
-            (ds.latitude <= lat_max),
-            drop=True
+            (ds.latitude <= lat_max)
         )
+
+        # Convert mask to numpy for index finding
+        y_inds, x_inds = np.where(mask.values)
+
+        if len(y_inds) == 0:
+            raise ValueError("BBox does not intersect HRRR grid.")
+
+        y_slice = slice(y_inds.min(), y_inds.max() + 1)
+        x_slice = slice(x_inds.min(), x_inds.max() + 1)
+
+        return ds.isel(y=y_slice, x=x_slice)
 
     def fetch_range(self, start_time, end_time, variable=None, bbox=None):
 

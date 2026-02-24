@@ -2,19 +2,6 @@ import xarray as xr
 import xesmf as xe
 
 
-# def build_hrrr_grid(hrrr_ds):
-#     """
-#     Build xESMF-compatible HRRR target grid.
-#     """
-
-#     grid = xr.Dataset(
-#         {
-#             "lat": (("y", "x"), hrrr_ds.latitude.values),
-#             "lon": (("y", "x"), hrrr_ds.longitude.values),
-#         }
-#     )
-
-#     return grid
 
 def build_hrrr_grid(hrrr_ds):
 
