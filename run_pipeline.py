@@ -1,6 +1,6 @@
 import argparse
 import xarray as xr
-import pathlib as Path
+from  pathlib import Path
 
 from lab_fetcher.hrrr_fetcher import HRRRFetcher
 from lab_fetcher.grid import regrid_rave_to_hrrr
