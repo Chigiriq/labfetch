@@ -4,6 +4,9 @@ import xarray as xr
 from pathlib import Path
 import numpy as np
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_ROOT = PROJECT_ROOT / "data"
+
 class HRRRFetcher:
     DEFAULT_VARS = [
         "TMP:2 m",
@@ -18,14 +21,11 @@ class HRRRFetcher:
         self.model = model
         self.product = product
 
-        # Default save_dir inside project folder
         if save_dir is None:
-            # Use current working directory / labfetch/hrrr
-            self.save_dir = Path.cwd() / "lab_fetcher" / "hrrr"
+            self.save_dir = DATA_ROOT / "hrrr"
         else:
             self.save_dir = Path(save_dir)
 
-        # Make sure the directory exists
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
     @staticmethod

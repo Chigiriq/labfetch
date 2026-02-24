@@ -5,12 +5,19 @@ import xarray as xr
 import pandas as pd
 from urllib.parse import urljoin
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_ROOT = PROJECT_ROOT / "data"
 
 class RAVEFetcher:
     BASE_URL = "https://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km/"
+    
+    
+    def __init__(self, save_dir=None):
+        if save_dir is None:
+            self.save_dir = DATA_ROOT / "rave"
+        else:
+            self.save_dir = Path(save_dir)
 
-    def __init__(self, save_dir="data/rave"):
-        self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
     def _list_directory(self, url):
