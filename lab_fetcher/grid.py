@@ -2,24 +2,19 @@ import xarray as xr
 # import xesmf as xe
 import warnings
 import os
+import warnings
 
-# Try to import xESMF only if ESMFMKFILE is set
+xr.set_options(use_new_combine_kwarg_defaults=True)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# xESMF detection (works on conda Linux -- WSL dependent)
 try:
-    if "ESMFMKFILE" in os.environ:
-        import xesmf as xe
-        _XESMF_AVAILABLE = True
-    else:
-        _XESMF_AVAILABLE = False
-        warnings.warn(
-            "ESMFMKFILE not set. Falling back to xarray.interp(). "
-            "Curvilinear/conservative regridding will not be exact."
-        )
-except ImportError:
+    import xesmf as xe
+    _XESMF_AVAILABLE = True
+    print("xESMF detected — using high-quality regridding")
+except Exception as e:
     _XESMF_AVAILABLE = False
-    warnings.warn(
-        "xesmf not installed. Falling back to xarray.interp(). "
-        "Curvilinear/conservative regridding will not be exact."
-    )
+    warnings.warn(f"xESMF unavailable, falling back to interp(): {e}")
 
 
 def build_hrrr_grid(hrrr_ds):
@@ -63,6 +58,11 @@ def regrid_rave_to_hrrr(rave_ds, hrrr_ds, method="bilinear"):
     rave_center = rave_ds[grid_vars]
 
     # Normalize RAVE longitudes 0-360 to match HRRR
+    # if rave_center.grid_lont.min() < 0:
+    #     rave_center = rave_center.assign_coords(
+    #         grid_lont=(rave_center.grid_lont % 360)
+    #     )
+    # Convert RAVE 0–360 → -180–180 to match HRRR
     if rave_center.grid_lont.min() < 0:
         rave_center = rave_center.assign_coords(
             grid_lont=(rave_center.grid_lont % 360)
@@ -84,10 +84,10 @@ def regrid_rave_to_hrrr(rave_ds, hrrr_ds, method="bilinear"):
 
     else:
         # fallback: xarray interpolation
-        rave_center = rave_center.rename({
-            "grid_latt": "latitude",
-            "grid_lont": "longitude"
-        })
+        rave_center = rave_center.assign_coords(
+            latitude=rave_ds["grid_latt"],
+            longitude=rave_ds["grid_lont"]
+        )
         regridded = rave_center.interp(
             latitude=hrrr_ds.latitude,
             longitude=hrrr_ds.longitude,

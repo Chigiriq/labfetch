@@ -3,132 +3,110 @@ from bs4 import BeautifulSoup
 from pathlib import Path
 import xarray as xr
 import pandas as pd
+import warnings
 from urllib.parse import urljoin
+
+# ---- xarray + warnings config ----
+xr.set_options(use_new_combine_kwarg_defaults=True)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = PROJECT_ROOT / "data"
 
+
 class RAVEFetcher:
     BASE_URL = "https://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km/"
-    
-    
-    def __init__(self, save_dir=None):
-        if save_dir is None:
-            self.save_dir = DATA_ROOT / "rave"
-        else:
-            self.save_dir = Path(save_dir)
 
+    def __init__(self, save_dir=None):
+        self.save_dir = Path(save_dir) if save_dir else DATA_ROOT / "rave"
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
     def _list_directory(self, url):
-        response = requests.get(url)
-        response.raise_for_status()
+        r = requests.get(url)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
 
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        links = []
-        for link in soup.find_all("a"):
-            href = link.get("href")
-            if href and href.endswith(".nc"):
-                links.append(urljoin(url, href))
-
-        return links
+        return [
+            urljoin(url, a.get("href"))
+            for a in soup.find_all("a")
+            if a.get("href", "").endswith(".nc")
+        ]
 
     def _collect_nc_files(self, start_time, end_time):
         start_time = pd.to_datetime(start_time)
         end_time = pd.to_datetime(end_time)
 
-        all_files = []
-
+        files = []
         months = pd.period_range(start_time, end_time, freq="M")
 
-        for period in months:
-            year = period.strftime("%Y")
-            month = period.strftime("%m")
-
-            month_url = f"{self.BASE_URL}{year}/{month}/"
-            print("Checking:", month_url)
+        for p in months:
+            url = f"{self.BASE_URL}{p.strftime('%Y')}/{p.strftime('%m')}/"
+            print("Checking:", url)
 
             try:
-                links = self._list_directory(month_url)
-
-                for link in links:
-                    filename = link.split("/")[-1]
-
+                for link in self._list_directory(url):
+                    name = link.split("/")[-1]
                     try:
-                        start_str = filename.split("_s")[1][:14]
-                        file_time = pd.to_datetime(
-                            start_str,
-                            format="%Y%m%d%H%M%S"
+                        ts = pd.to_datetime(
+                            name.split("_s")[1][:14],
+                            format="%Y%m%d%H%M%S",
                         )
-
-                        if start_time <= file_time <= end_time:
-                            all_files.append(link)
-
+                        if start_time <= ts <= end_time:
+                            files.append(link)
                     except Exception:
-                        continue
-
+                        pass
             except Exception:
-                continue
+                pass
 
-        return sorted(all_files)
+        return sorted(files)
 
     @staticmethod
     def _spatial_subset(ds, lon_min, lon_max, lat_min, lat_max):
-
-        # Build 2-D mask only on cell-center grid
         mask = (
-            (ds["grid_lont"] >= lon_min) &
-            (ds["grid_lont"] <= lon_max) &
-            (ds["grid_latt"] >= lat_min) &
-            (ds["grid_latt"] <= lat_max)
+            (ds["grid_lont"] >= lon_min)
+            & (ds["grid_lont"] <= lon_max)
+            & (ds["grid_latt"] >= lat_min)
+            & (ds["grid_latt"] <= lat_max)
         )
 
-        # Drop variables not on (grid_yt, grid_xt)
         center_vars = [
             v for v in ds.data_vars
             if {"grid_yt", "grid_xt"}.issubset(ds[v].dims)
         ]
 
-        ds_center = ds[center_vars]
-
-        # Apply mask only to center variables
-        ds_subset = ds_center.where(mask, drop=True)
-
-        return ds_subset
-
+        return ds[center_vars].where(mask, drop=True)
 
     def fetch_range(self, start_time, end_time, bbox=None):
 
         files = self._collect_nc_files(start_time, end_time)
-
         print(f"Found {len(files)} remote files matching date range.")
 
-        datasets = []
+        combined = None
 
-        for file_url in files:
-            filename = file_url.split("/")[-1]
-            local_file = self.save_dir / filename
+        for url in files:
+            name = url.split("/")[-1]
+            local = self.save_dir / name
 
-            if not local_file.exists():
-                print(f"Downloading {filename}")
-                r = requests.get(file_url)
+            if not local.exists():
+                print("Downloading", name)
+                r = requests.get(url)
                 r.raise_for_status()
-                local_file.write_bytes(r.content)
+                local.write_bytes(r.content)
             else:
-                print(f"Using cached file: {filename}")
+                print("Using cached:", name)
 
-            ds = xr.open_dataset(local_file)
+            ds = xr.open_dataset(local, chunks={})
 
-            if bbox is not None:
-                lon_min, lon_max, lat_min, lat_max = bbox
-                ds = self._spatial_subset(ds, lon_min, lon_max, lat_min, lat_max)
+            if bbox:
+                ds = self._spatial_subset(ds, *bbox)
 
-            datasets.append(ds)
+            # ---- STREAM CONCAT ----
+            if combined is None:
+                combined = ds
+            else:
+                combined = xr.concat([combined, ds], dim="time")
 
-        if not datasets:
+        if combined is None:
             raise RuntimeError("No RAVE files found.")
-
-        combined = xr.concat(datasets, dim="time")
 
         return combined
