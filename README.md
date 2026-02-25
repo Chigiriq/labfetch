@@ -18,12 +18,12 @@ The program executes the following workflow automatically:
 **This tool relies heavily on the `esmf` and `xesmf` package families.** These geospatial packages **do not** natively support Windows.
 
 *   **Linux Users:** You can run this natively.
-*   **Windows Users:** You **must** run the CLI pipeline through **WSL2 (Windows Subsystem for Linux)**.
+*   **Windows Users:** You **must** run the CLI pipeline through **WSL (Windows Subsystem for Linux)**.
 
 ### Environment Files
 The specific package lists required to build the environment are located in the `envs` folder:
 *   **WSL / Linux:** `labfetch/envs/wslReqs.txt` (Required for the main pipeline)
-*   **Windows:** `labfetch/envs/winReqs.txt` (For local notebook analysis only, *cannot run regridding*)
+*   **Windows:** `labfetch/envs/winReqs.txt` (For local notebook analysis only, *cannot run regridding thought cli*)
 
 ---
 
