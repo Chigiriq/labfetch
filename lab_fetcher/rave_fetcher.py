@@ -61,20 +61,47 @@ class RAVEFetcher:
         return sorted(files)
 
     @staticmethod
-    def _spatial_subset(ds, lon_min, lon_max, lat_min, lat_max):
-        mask = (
-            (ds["grid_lont"] >= lon_min)
-            & (ds["grid_lont"] <= lon_max)
-            & (ds["grid_latt"] >= lat_min)
-            & (ds["grid_latt"] <= lat_max)
-        )
+    def _to_0360(lon):
+        return lon % 360
 
-        center_vars = [
+
+    @classmethod
+    def _spatial_subset(cls, ds, lon_min, lon_max, lat_min, lat_max):
+
+        # ---- convert bbox to 0-360 ----
+        lon_min = cls._to_0360(lon_min)
+        lon_max = cls._to_0360(lon_max)
+
+        lon = ds["grid_lont"]
+        lat = ds["grid_latt"]
+
+        mask = (
+            (lon >= lon_min)
+            & (lon <= lon_max)
+            & (lat >= lat_min)
+            & (lat <= lat_max)
+        ).compute()
+
+        # Find exact indices like HRRR does to preserve the curved corners!
+        import numpy as np
+        y_idx, x_idx = np.where(mask.values)
+        if len(y_idx) == 0:
+            print("Empty spatial subset — skipping file")
+            return None
+
+        # ---- keep coords + center vars ----
+        keep_vars = [
             v for v in ds.data_vars
             if {"grid_yt", "grid_xt"}.issubset(ds[v].dims)
         ]
 
-        return ds[center_vars].where(mask, drop=True)
+        # Slice the bounding box indices directly instead of dropping
+        subset = ds[keep_vars + ["grid_latt", "grid_lont"]].isel(
+            grid_yt=slice(y_idx.min(), y_idx.max() + 1),
+            grid_xt=slice(x_idx.min(), x_idx.max() + 1)
+        )
+
+        return subset
 
     def fetch_range(self, start_time, end_time, bbox=None):
 
@@ -99,6 +126,8 @@ class RAVEFetcher:
 
             if bbox:
                 ds = self._spatial_subset(ds, *bbox)
+                if ds is None:
+                    continue
 
             # ---- STREAM CONCAT ----
             if combined is None:

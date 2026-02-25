@@ -41,7 +41,7 @@ class HRRRFetcher:
             & (ds.longitude <= lon_max)
             & (ds.latitude >= lat_min)
             & (ds.latitude <= lat_max)
-        )
+        ).compute()
 
         y, x = np.where(mask.values)
         if len(y) == 0:
