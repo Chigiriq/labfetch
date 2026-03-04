@@ -21,9 +21,9 @@ The program executes the following workflow automatically:
 *   **Windows Users:** You **must** run the CLI pipeline through **WSL (Windows Subsystem for Linux)**.
 
 ### Environment Files
-The specific package lists required to build the environment are located in the `envs` folder. **Note:** These environments rely on **conda-forge**.
+The specific package lists required to build the environment are located in the `envs` folder. **Note:** These environments rely on **conda-forge**. 
 
-*   **WSL / Linux:** `envs/wslReqs.txt` (Required for the main pipeline)
+*   **WSL / Linux:** `envs/wslReqs.txt` (Required for the main pipeline). Intended for use in Linux-64 systems
 *   **Windows:** `envs/winReqs.txt` (For local notebook analysis only; *cannot run regridding through CLI*)
 
 ---

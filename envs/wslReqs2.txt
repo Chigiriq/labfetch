@@ -1,0 +1,50 @@
+# Core
+python=3.11
+pip
+ipykernel
+
+# Geospatial Core
+rioxarray
+rasterio
+gdal
+cartopy
+geopandas
+shapely
+pyproj
+fiona
+
+# Xarray Ecosystem
+xarray
+cf_xarray
+xesmf
+netcdf4
+h5netcdf
+cfgrib
+eccodes
+
+# Data & SciPy Stack
+pandas
+numpy
+scipy
+matplotlib
+zarr
+dask
+distributed
+
+# Network & Cloud
+requests
+beautifulsoup4
+lxml
+fsspec
+aiohttp
+s3fs
+
+# Domain Specific
+herbie-data
+
+# Utilities
+click
+joblib
+psutil
+pyyaml
+tqdm

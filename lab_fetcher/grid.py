@@ -2,6 +2,7 @@ import os
 import xesmf as xe
 from dask.diagnostics import ProgressBar
 import warnings
+import xarray as xr
 
 warnings.filterwarnings("ignore", message="Input array is not F_CONTIGUOUS")
 
@@ -16,17 +17,13 @@ def regrid_rave_to_hrrr(rave_clip, hrrr_clip, weights_path=None, method="bilinea
                                     If None, weights are calculated in memory (slower).
         method (str): Regridding method (bilinear, conservative, etc).
     """
-    
-    # Logic to handle weights file reuse
     if weights_path:
         reuse = os.path.exists(weights_path)
-        filename = str(weights_path) # xESMF expects a string
+        filename = str(weights_path)
     else:
-        # If no path provided, do not save a file, do not reuse
         reuse = False
         filename = None
 
-    # Create the regridder
     regridder = xe.Regridder(
         rave_clip,
         hrrr_clip,
@@ -35,8 +32,39 @@ def regrid_rave_to_hrrr(rave_clip, hrrr_clip, weights_path=None, method="bilinea
         filename=filename,
     )
 
-    print(f"  (Regridding {list(rave_clip.data_vars)}...)")
+    print(f"  (Regridding RAVE: {list(rave_clip.data_vars)}...)")
     with ProgressBar():
         rave_rg = regridder(rave_clip)
 
     return rave_rg
+
+def regrid_static_to_hrrr(static_ds, hrrr_clip, weights_path=None):
+    """
+    Regrids Static Data (Landfire) → HRRR grid.
+    
+    USES NEAREST_S2D (Nearest Source to Destination) method.
+    This is required for categorical data like Fuel Models (you cannot average them).
+    """
+    
+    if weights_path:
+        # Append '_static' to distinguish from RAVE weights
+        filename = str(weights_path).replace(".nc", "_static.nc")
+        reuse = os.path.exists(filename)
+    else:
+        reuse = False
+        filename = None
+
+    # 'nearest_s2d' ensures we pick the dominant fuel model, not an average
+    regridder = xe.Regridder(
+        static_ds,
+        hrrr_clip,
+        method="nearest_s2d", 
+        reuse_weights=reuse,
+        filename=filename,
+    )
+
+    print(f"  (Regridding Static Data: {list(static_ds.data_vars)}...)")
+    # No progress bar needed for single frame usually
+    static_rg = regridder(static_ds)
+
+    return static_rg
