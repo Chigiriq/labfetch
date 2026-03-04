@@ -14,13 +14,15 @@ DATA_ROOT = PROJECT_ROOT / "data"
 
 
 class HRRRFetcher:
+    # UPDATED SEARCH STRINGS
     DEFAULT_VARS = [
-        "TMP:2 m",
-        "DPT:2 m",
-        "UGRD:10 m",
-        "VGRD:10 m",
-        "PBLH",
-        "PRES:sfc",
+        ":TMP:2 m",
+        ":DPT:2 m",
+        ":UGRD:10 m",
+        ":VGRD:10 m",
+        ":PBLH:",
+        ":PRES:surface:", 
+        ":HGT:surface:",
     ]
 
     def __init__(self, model="hrrr", product="sfc", save_dir=None):
@@ -31,7 +33,6 @@ class HRRRFetcher:
 
     @staticmethod
     def _spatial_subset(ds, lon_min, lon_max, lat_min, lat_max):
-
         if ds.longitude.max() > 180:
             lon_min %= 360
             lon_max %= 360
@@ -53,13 +54,11 @@ class HRRRFetcher:
         )
 
     def fetch_range(self, start_time, end_time, variable=None, bbox=None):
-
         times = pd.date_range(start_time, end_time, freq="1h")
-
         combined = None
 
         for t in times:
-            print("Fetching HRRR:", t)
+            print(f"Fetching HRRR: {t}")
 
             H = Herbie(
                 t,
@@ -69,16 +68,43 @@ class HRRRFetcher:
             )
 
             search = "|".join(self.DEFAULT_VARS) if variable is None else variable
-            ds = H.xarray(search=search)
+            
+            try:
+                ds_list = H.xarray(search=search)
+            except Exception as e:
+                print(f"  -> Fetch failed: {e}")
+                continue
 
-            if isinstance(ds, list):
-                ds = xr.merge(ds, compat="override")
+            if not isinstance(ds_list, list):
+                ds_list = [ds_list]
+
+            try:
+                ds = xr.merge(ds_list, compat="override")
+            except Exception as e:
+                print(f"  -> Merge failed: {e}")
+                continue
 
             if "step" in ds.dims:
                 ds = ds.isel(step=0)
 
             if bbox:
-                ds = self._spatial_subset(ds, *bbox)
+                try:
+                    ds = self._spatial_subset(ds, *bbox)
+                except ValueError:
+                    print("  -> BBox empty, skipping.")
+                    continue
+
+            # Rename generic GRIB names
+            if "orog" in ds:
+                ds = ds.rename({"orog": "elevation"})
+            elif "hgt" in ds:
+                ds = ds.rename({"hgt": "elevation"})
+
+            # --- CRITICAL FIX: FORCE TIME DIMENSION ---
+            # This ensures (y, x) becomes (1, y, x) so it can be concatenated later
+            if "time" in ds.coords:
+                ds = ds.expand_dims("time")
+            # ------------------------------------------
 
             # ---- STREAM CONCAT ----
             if combined is None:

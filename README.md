@@ -121,6 +121,71 @@ If you wish to use the notebooks (`validationTest.ipynb` or `test_fetch.ipynb`) 
 
 ---
 
-## 📂 Output
-*   **Intermediate Files:** Stored in `temp_processing/` during the run (automatically deleted upon success).
-*   **Final Output:** The merged NetCDF file is saved to `data/combined_final.nc`.
+## 📂 Output & Data Structure
+
+### 💾 File Storage
+The pipeline manages data storage automatically:
+*   **Final Output:** `data/combined_final.nc` (Unified NetCDF dataset).
+*   **Temporary Workspace:** `temp_processing/` (Stores hourly chunks during execution; automatically cleaned up upon completion).
+
+### 📐 Dataset Format
+The output is an **xarray Dataset** aligned to the HRRR model's geospatial grid.
+
+**Dimensions & Coordinates:**
+*   `time`: Hourly timestamps (UTC).
+*   `y`, `x`: Projection grid indices (Lambert Conformal Conic).
+*   `lat`, `lon`: 2D arrays providing decimal latitude/longitude for every grid cell.
+
+### Variable List
+| Variable | Source | Description | Units |
+| :--- | :--- | :--- | :--- |
+| **rave_frp** | RAVE | Fire Radiative Power (Mean) | MW |
+| **t2m** | HRRR | Temperature at 2 meters | K |
+| **u10** | HRRR | U-Component of Wind at 10m | m/s |
+| **v10** | HRRR | V-Component of Wind at 10m | m/s |
+| **d2m** | HRRR | Dew Point Temperature | K |
+| **sp** | HRRR | Surface Pressure | Pa |
+| **elevation**| HRRR | Terrain Height / Orography | m |
+
+---
+
+### 🐍 Visualization Example
+
+You can quickly visualize the evolution of a fire event using `xarray` and `matplotlib`.
+
+### 🐍 Visualization Example
+
+To inspect specific snapshots (Start, Middle, and End) of key variables:
+
+```python
+import xarray as xr
+import matplotlib.pyplot as plt
+
+# Load Data
+ds = xr.open_dataset("data/combined_final.nc")
+
+# 1. Pick specific time indices (e.g., First, Middle, Last)
+# This ensures you see the beginning, peak, and end of your range
+indices = [0, len(ds.time)//2, len(ds.time)-1]
+
+# 2. Select specific variables to check (don't plot static grids like lat/lon)
+target_vars = ["rave_frp", "t2m", "elevation", "u10", "v10"]
+
+for var in target_vars:
+    if var not in ds: continue
+        
+    print(f"--- Plotting Evolution of {var} ---")
+    
+    # Select the specific times and plot them in a row (col="time")
+    subset = ds[var].isel(time=indices)
+    
+    subset.plot(
+        col="time",
+        col_wrap=3,
+        x="lon", 
+        y="lat",
+        cmap="turbo",
+        robust=False,
+        figsize=(15, 4)
+    )
+    plt.show()

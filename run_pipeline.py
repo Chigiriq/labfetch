@@ -43,20 +43,22 @@ def main():
 
     times = pd.date_range(args.start, args.end, freq="1h")
     
-    print("\nInitializing Pipeline (Targeting: RAVE FRP + PM25)...")
+    print("\nInitializing Pipeline (Targeting: RAVE FRP)...")
     
     hrrr_fetcher = HRRRFetcher()
     rave_fetcher = RAVEFetcher()
 
+    # --- OPTIMIZATION START ---
+    # Scrape and Download ALL RAVE files upfront (Parallel)
+    # This avoids scraping NOAA 24 times for a 24h run.
+    print("\n--- Pre-fetching RAVE Data ---")
+    rave_file_map = rave_fetcher.prefetch(args.start, args.end)
+    # --------------------------
+
     # Create temp dir
     temp_dir = Path("temp_processing")
     temp_dir.mkdir(parents=True, exist_ok=True)
-    
-    # --- DEFINE WEIGHTS FILE INSIDE TEMP DIR ---
-    # This ensures it is reused (fast) but deleted at the end (clean)
     weights_file = temp_dir / "weights_temp.nc"
-    # -------------------------------------------
-
     saved_files = []
 
     for t in times:
@@ -74,10 +76,16 @@ def main():
             if "latitude" in hrrr_ds:
                 hrrr_ds = hrrr_ds.rename({"latitude": "lat", "longitude": "lon"})
 
-            # Step 2: RAVE
-            print("Fetching & clipping RAVE...")
-            rave_ds = rave_fetcher.fetch_range(t, t, bbox=bbox_tuple)
-            
+            # Step 2: RAVE (INSTANT LOCAL LOAD)
+            if t in rave_file_map:
+                print(f"Loading cached RAVE file for {t}...")
+                rave_ds = rave_fetcher.open_local(rave_file_map[t], bbox=bbox_tuple)
+            else:
+                print(f"Warning: No RAVE file found for {t}. Skipping.")
+                continue
+
+            if rave_ds is None: continue
+
             if "grid_latt" in rave_ds:
                 rave_ds = rave_ds.rename({"grid_latt": "lat", "grid_lont": "lon"})
 
@@ -87,11 +95,7 @@ def main():
             if "FRP_MEAN" in rave_ds:
                 rave_subset["rave_frp"] = rave_ds["FRP_MEAN"].fillna(0.0)
             
-            if "PM25" in rave_ds:
-                rave_subset["rave_pm25"] = rave_ds["PM25"].fillna(0.0)
-                
-            if "PM25_scaled" in rave_ds:
-                rave_subset["rave_pm25_scaled"] = rave_ds["PM25_scaled"].fillna(0.0)
+            # (PM2.5 commented out as requested)
 
             if len(rave_subset.data_vars) == 0:
                 print(f"Warning: No valid RAVE variables found for {t}. Skipping.")
@@ -103,11 +107,10 @@ def main():
             })
             
             # Step 4: Regrid RAVE -> HRRR
-            # PASS THE TEMP WEIGHTS PATH HERE
             rave_rg = regrid_rave_to_hrrr(
                 rave_subset, 
                 hrrr_ds, 
-                weights_path=weights_file, # <--- Fix applied here
+                weights_path=weights_file, 
                 method="bilinear"
             )
 
@@ -134,7 +137,7 @@ def main():
         if temp_dir.exists(): shutil.rmtree(temp_dir)
         return
 
-    # Step 7: Combine (Memory Safe Method)
+    # Step 7: Combine
     print("\nCombining all processed hours into final dataset...")
     
     datasets = []
@@ -156,7 +159,6 @@ def main():
         combined.to_netcdf(final_out_path)
         print("Done! Data saved to combined_final.nc")
     
-    # Clean up (This deletes the weights file too)
     print("Cleaning up temporary files...")
     shutil.rmtree(temp_dir)
 
