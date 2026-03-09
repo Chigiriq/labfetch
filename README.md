@@ -21,10 +21,9 @@ The program executes the following workflow automatically:
 *   **Windows Users:** You **must** run the CLI pipeline through **WSL (Windows Subsystem for Linux)**.
 
 ### Environment Files
-The specific package lists required to build the environment are located in the `envs` folder. **Note:** These environments rely on **conda-forge**.
+The specific package list required to build the environment are located in the `envs` folder. **Note:** This environment relies on **conda-forge**.
 
-*   **WSL / Linux:** `envs/wslReqs.txt` (Required for the main pipeline)
-*   **Windows:** `envs/winReqs.txt` (For local notebook analysis only; *cannot run regridding through CLI*)
+*   **WSL / Linux:** `Reqs.txt`
 
 ---
 
@@ -62,9 +61,9 @@ To ensure all dependencies (especially the complex geospatial libraries like `ca
 # Navigate to the project root
 cd path/to/labfetch
 
-# Create the environment using the WSL requirements file
+# Create the environment using the requirements file
 # IMPORTANT: The '-c conda-forge' flag is required.
-conda create --name labfetch --file envs/wslReqs.txt -c conda-forge
+conda create -n labforge -c conda-forge --file envs/Reqs.txt
 
 # Activate the environment
 conda activate labfetch
@@ -104,17 +103,12 @@ python run_pipeline.py \
 ### Jupyter Notebooks
 If you wish to use the notebooks (`validationTest.ipynb` or `test_fetch.ipynb`) for data exploration on Windows:
 
-1.  Create the environment using the Windows requirements file and **conda-forge**:
+1.  Create and activate the environment using the Windows requirements file and **conda-forge**:
     ```bash
-    conda create --name labfetch --file envs/winReqs.txt -c conda-forge
+    conda create -n labforge -c conda-forge --file envs/Reqs.txt
     conda activate labfetch
     ```
-2.  Install the Jupyter kernel:
-    ```bash
-    conda install -c conda-forge ipykernel
-    python -m ipykernel install --user --name=labfetch
-    ```
-3.  Launch Jupyter:
+2.  Launch Jupyter:
     ```bash
     jupyter lab
     ```
