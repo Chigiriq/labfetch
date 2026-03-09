@@ -6,6 +6,7 @@ import pandas as pd
 import warnings
 from urllib.parse import urljoin
 import concurrent.futures
+from .base_fetcher import BaseFetcher 
 
 # ---- xarray + warnings config ----
 xr.set_options(use_new_combine_kwarg_defaults=True)
@@ -14,13 +15,14 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = PROJECT_ROOT / "data"
 
-
-class RAVEFetcher:
+class RAVEFetcher(BaseFetcher): 
     BASE_URL = "https://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km/"
 
     def __init__(self, save_dir=None):
+        super().__init__(source_name="RAVE") 
         self.save_dir = Path(save_dir) if save_dir else DATA_ROOT / "rave"
         self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.file_map = {} 
 
     def _list_directory(self, url):
         try:
@@ -42,20 +44,18 @@ class RAVEFetcher:
         end_time = pd.to_datetime(end_time)
 
         files = []
-        # RAVE stores data in YYYY/MM folders
+        # Note: 'ME' is the modern pandas frequency for Month End
         months = pd.period_range(start_time, end_time, freq="M")
 
         for p in months:
             url = f"{self.BASE_URL}{p.strftime('%Y')}/{p.strftime('%m')}/"
             print("Checking NOAA RAVE Index:", url)
 
-            # Collect all links from that month
             links = self._list_directory(url)
             
             for link in links:
                 name = link.split("/")[-1]
                 try:
-                    # Parse timestamp from filename: RAVE..._sYYYYMMDDHHMMSS_...
                     ts_str = name.split("_s")[1][:14]
                     ts = pd.to_datetime(ts_str, format="%Y%m%d%H%M%S")
                     
@@ -103,11 +103,9 @@ class RAVEFetcher:
         return subset
 
     def _download_worker(self, url):
-        """Helper for parallel downloads"""
         name = url.split("/")[-1]
         local = self.save_dir / name
         
-        # Only download if we don't have it
         if not local.exists():
             print(f"Downloading {name}...")
             try:
@@ -120,12 +118,6 @@ class RAVEFetcher:
         return local
 
     def prefetch(self, start_time, end_time):
-        """
-        1. Scrapes NOAA directory ONCE.
-        2. Downloads ALL files in parallel.
-        3. Returns a dictionary: { timestamp: local_path }
-        """
-        # 1. Scrape URLs
         files = self._collect_nc_files(start_time, end_time)
         if not files:
             print("No RAVE files found for this range.")
@@ -133,32 +125,33 @@ class RAVEFetcher:
 
         print(f"Found {len(files)} RAVE files. Starting parallel download...")
 
-        # 2. Parallel Download
         local_paths = []
-        # Increase max_workers to speed up downloads (IO bound)
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             results = executor.map(self._download_worker, files)
             for res in results:
                 if res: local_paths.append(res)
 
-        # 3. Build Index Map
-        file_map = {}
+        self.file_map = {}
         for p in local_paths:
             try:
-                # Re-parse timestamp from local filename to create lookup key
                 name = p.name
                 ts_str = name.split("_s")[1][:14]
-                # Round to nearest hour to match the pipeline loop (YYYY-MM-DD HH:00:00)
                 ts = pd.to_datetime(ts_str, format="%Y%m%d%H%M%S").round("h")
-                file_map[ts] = p
+                self.file_map[ts] = p 
             except Exception:
                 pass
         
-        print(f"Successfully cached {len(file_map)} RAVE files.")
-        return file_map
+        print(f"Successfully cached {len(self.file_map)} RAVE files.")
+        return self.file_map
 
-    def open_local(self, path, bbox=None):
-        """Opens a local file and optionally clips it."""
+    def fetch_data(self, start_time, end_time, bbox=None):
+        t = pd.to_datetime(start_time)
+        
+        if t not in self.file_map:
+            print(f"  -> File for {t} not found in prefetch map.")
+            return None
+
+        path = self.file_map[t]
         try:
             ds = xr.open_dataset(path, chunks={})
             if bbox:
@@ -167,3 +160,6 @@ class RAVEFetcher:
         except Exception as e:
             print(f"Error opening RAVE file {path}: {e}")
             return None
+
+    def validate_data(self, data: xr.Dataset) -> bool:
+        return "FRP_MEAN" in data.data_vars or "rave_frp" in data.data_vars
