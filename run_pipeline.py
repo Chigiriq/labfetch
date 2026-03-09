@@ -2,6 +2,10 @@
 import sys
 import os
 sys.dont_write_bytecode = True
+
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 # ----------------------------------
 
 import argparse
@@ -12,96 +16,126 @@ from pathlib import Path
 
 from fetchers.hrrr_fetcher import HRRRFetcher
 from fetchers.rave_fetcher import RAVEFetcher
+from fetchers.wfigs_fetcher import WFIGSFetcher 
 from processors.grid import regrid_rave_to_hrrr
-
-def parse_bbox(text):
-    lat_min, lat_max, lon_min, lon_max = map(float, text.split(","))
-    return dict(lat_min=lat_min, lat_max=lat_max, lon_min=lon_min, lon_max=lon_max)
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
-    parser.add_argument("--bbox", required=True)
     args = parser.parse_args()
 
-    bbox_dict = parse_bbox(args.bbox)
-    pad = 0.5
-    bbox_tuple = (
-        bbox_dict["lon_min"] - pad, bbox_dict["lon_max"] + pad,
-        bbox_dict["lat_min"] - pad, bbox_dict["lat_max"] + pad
-    )
-
-    times = pd.date_range(args.start, args.end, freq="1h")
-    
+    # 1. Initialize Fetchers
+    wfigs_fetcher = WFIGSFetcher()
     hrrr_fetcher = HRRRFetcher()
     rave_fetcher = RAVEFetcher()
 
-    print("\n--- Pre-fetching RAVE Data ---")
-    rave_fetcher.prefetch(args.start, args.end) # Internalizes the file map
+    print("\n=== STEP 1: Identifying Fires via WFIGS ===")
+    wfigs_gdf = wfigs_fetcher.process(args.start, args.end)
+    
+    if wfigs_gdf is None:
+        print("No fires found matching criteria. Exiting.")
+        return
+
+    fire_tasks = wfigs_fetcher.generate_fire_tasks(wfigs_gdf, pad=0.5)
+    print(f"Found {len(fire_tasks)} fires to process.")
+
+    print("\n=== STEP 2: Pre-fetching RAVE Data ===")
+    rave_fetcher.prefetch(args.start, args.end)
 
     temp_dir = Path("temp_processing")
     temp_dir.mkdir(parents=True, exist_ok=True)
-    weights_file = temp_dir / "weights_temp.nc"
-    saved_files = []
+    
+    times = pd.date_range(args.start, args.end, freq="1h")
 
+    # === STEP 3: Time on the OUTSIDE, Fires on the INSIDE ===
     for t in times:
-        print(f"\n--- Processing {t} ---")
+        print(f"\n=== Fetching Global/CONUS Data for {t} ===")
         
+        # Fetch the entire map exactly ONCE per hour
         try:
-            # 1. Fetch HRRR using Base interface
-            hrrr_ds = hrrr_fetcher.process(t, t, bbox=bbox_tuple)
-            if hrrr_ds is None: continue
-            if "latitude" in hrrr_ds:
-                hrrr_ds = hrrr_ds.rename({"latitude": "lat", "longitude": "lon"})
-
-            # 2. Fetch RAVE using Base interface
-            rave_ds = rave_fetcher.process(t, t, bbox=bbox_tuple)
-            if rave_ds is None: continue
-            if "grid_latt" in rave_ds:
-                rave_ds = rave_ds.rename({"grid_latt": "lat", "grid_lont": "lon"})
-
-            # 3. Clean up RAVE vars
-            rave_subset = xr.Dataset()
-            if "FRP_MEAN" in rave_ds:
-                rave_subset["rave_frp"] = rave_ds["FRP_MEAN"].fillna(0.0)
-            
-            rave_subset = rave_subset.assign_coords({"lat": rave_ds.lat, "lon": rave_ds.lon})
-            
-            # 4. Regrid
-            rave_rg = regrid_rave_to_hrrr(rave_subset, hrrr_ds, weights_path=weights_file, method="bilinear")
-
-            # 5. Merge and Save
-            merged = xr.merge([hrrr_ds, rave_rg], compat="override")
-            out_path = temp_dir / f"merged_{t.strftime('%Y%m%d%H')}.nc"
-            merged.to_netcdf(out_path)
-            saved_files.append(out_path)
-            
-            hrrr_ds.close()
-            rave_ds.close()
-            merged.close()
-
+            hrrr_conus = hrrr_fetcher.process(t, t, bbox=None)
+            rave_conus = rave_fetcher.process(t, t, bbox=None)
         except Exception as e:
-            print(f"Skipping {t} due to error: {e}")
+            print(f"Failed to fetch global data for {t}: {e}")
+            continue
+            
+        if hrrr_conus is None or rave_conus is None:
+            print(f"Skipping {t}: Missing HRRR or RAVE global data.")
             continue
 
-    if not saved_files:
-        print("\nNo files were processed successfully. Exiting.")
-        if temp_dir.exists(): shutil.rmtree(temp_dir)
-        return
+        for task in fire_tasks:
+            fire_id = task["fire_id"]
+            bbox = task["bbox"]
+            
+            try:
+                # Clip the specific fire out of the global memory instantly
+                hrrr_clip = hrrr_fetcher._spatial_subset(hrrr_conus, *bbox)
+                rave_clip = rave_fetcher._spatial_subset(rave_conus, *bbox)
+                
+                if hrrr_clip is None or rave_clip is None:
+                    # Skips if fire geometry completely misses the datasets
+                    continue
 
-    print("\nCombining all processed hours into final dataset...")
-    datasets = [xr.open_dataset(p).load() for p in saved_files]
+                # Standardize Coordinates
+                hrrr_clip = hrrr_clip.rename({"latitude": "lat", "longitude": "lon"})
+                rave_clip = rave_clip.rename({"grid_latt": "lat", "grid_lont": "lon"})
 
-    if datasets:
+                rave_subset = xr.Dataset()
+                if "FRP_MEAN" in rave_clip:
+                    rave_subset["rave_frp"] = rave_clip["FRP_MEAN"].fillna(0.0)
+                rave_subset = rave_subset.assign_coords({"lat": rave_clip.lat, "lon": rave_clip.lon})
+
+                # Regrid & Merge
+                weights_file = temp_dir / f"weights_{fire_id}.nc"
+                rave_rg = regrid_rave_to_hrrr(rave_subset, hrrr_clip, weights_path=weights_file, method="bilinear")
+
+                merged = xr.merge([hrrr_clip, rave_rg], compat="override")
+                
+                # Ensure time dim exists for later concatenation
+                if "time" not in merged.dims:
+                    merged = merged.expand_dims("time")
+                    
+                out_path = temp_dir / f"{fire_id}_{t.strftime('%Y%m%d%H')}.nc"
+                merged.to_netcdf(out_path)
+                
+                hrrr_clip.close()
+                rave_clip.close()
+                merged.close()
+
+            except Exception as e:
+                print(f"  -> Error processing {task['name']} at {t}: {e}")
+                continue
+
+    # === STEP 4: Assembling the Final Zarr Store ===
+    print("\n=== STEP 4: Assembling Final Zarr Store ===")
+    data_dir = Path("data")
+    data_dir.mkdir(parents=True, exist_ok=True)
+    zarr_path = data_dir / "all_fires_combined.zarr"
+
+    processed_fires = 0
+    for task in fire_tasks:
+        fire_id = task["fire_id"]
+        # Grab all temporary hourly files for this specific fire
+        files = sorted(temp_dir.glob(f"{fire_id}_*.nc"))
+        
+        if not files:
+            continue
+            
+        print(f"Writing {task['name']} to Zarr group...")
+        datasets = [xr.open_dataset(p).load() for p in files]
         combined = xr.concat(datasets, dim="time")
-        data_dir = Path("data")
-        data_dir.mkdir(parents=True, exist_ok=True)
-        final_out_path = data_dir / "combined_final.nc"
-        combined.to_netcdf(final_out_path)
-        print("Done! Data saved to combined_final.nc")
-    
-    shutil.rmtree(temp_dir)
+        
+        # Attach fire metadata 
+        combined.attrs["Fire_Name"] = task["name"]
+        combined.attrs["Fire_Acres"] = task["acres"]
+        
+        # Save to a specific hierarchical group inside the Zarr store
+        combined.to_zarr(zarr_path, group=fire_id, mode="a")
+        processed_fires += 1
+
+    print(f"\nPipeline Complete! {processed_fires} fires safely stored in {zarr_path}")
+    if temp_dir.exists(): shutil.rmtree(temp_dir)
 
 if __name__ == "__main__":
     main()
