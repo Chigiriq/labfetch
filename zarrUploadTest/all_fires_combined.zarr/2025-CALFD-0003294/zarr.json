@@ -1,0 +1,20 @@
+{
+  "attributes": {
+    "GRIB_edition": 2,
+    "GRIB_centre": "kwbc",
+    "GRIB_centreDescription": "US National Weather Service - NCEP",
+    "GRIB_subCentre": 0,
+    "Conventions": "CF-1.7",
+    "institution": "US National Weather Service - NCEP",
+    "model": "hrrr",
+    "product": "sfc",
+    "description": "High-Resolution Rapid Refresh - CONUS",
+    "remote_grib": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20250107/conus/hrrr.t10z.wrfsfcf00.grib2",
+    "local_grib": "/mnt/c/users/alex/desktop/lab/labfetch/data/hrrr/hrrr/20250107/subset_27efe9b8__hrrr.t10z.wrfsfcf00.grib2",
+    "search": ":TMP:2 m|:DPT:2 m|:UGRD:10 m|:VGRD:10 m|:PBLH:|:PRES:surface:|:HGT:surface:",
+    "Fire_Name": "HURST",
+    "Fire_Acres": 799
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

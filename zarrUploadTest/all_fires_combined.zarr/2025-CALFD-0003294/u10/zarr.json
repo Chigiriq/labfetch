@@ -1,0 +1,91 @@
+{
+  "shape": [
+    25,
+    43,
+    38
+  ],
+  "data_type": "float32",
+  "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+      "chunk_shape": [
+        25,
+        43,
+        38
+      ]
+    }
+  },
+  "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+      "separator": "/"
+    }
+  },
+  "fill_value": "NaN",
+  "codecs": [
+    {
+      "name": "bytes",
+      "configuration": {
+        "endian": "little"
+      }
+    },
+    {
+      "name": "zstd",
+      "configuration": {
+        "level": 0,
+        "checksum": false
+      }
+    }
+  ],
+  "attributes": {
+    "GRIB_paramId": 165,
+    "GRIB_dataType": "fc",
+    "GRIB_numberOfPoints": 1905141,
+    "GRIB_typeOfLevel": "heightAboveGround",
+    "GRIB_stepUnits": 1,
+    "GRIB_stepType": "instant",
+    "GRIB_gridType": "lambert",
+    "GRIB_uvRelativeToGrid": 1,
+    "GRIB_DxInMetres": 3000.0,
+    "GRIB_DyInMetres": 3000.0,
+    "GRIB_LaDInDegrees": 38.5,
+    "GRIB_Latin1InDegrees": 38.5,
+    "GRIB_Latin2InDegrees": 38.5,
+    "GRIB_LoVInDegrees": 262.5,
+    "GRIB_NV": 0,
+    "GRIB_Nx": 1799,
+    "GRIB_Ny": 1059,
+    "GRIB_cfName": "eastward_wind",
+    "GRIB_cfVarName": "u10",
+    "GRIB_gridDefinitionDescription": "Lambert Conformal can be secant or tangent, conical or bipolar",
+    "GRIB_iScansNegatively": 0,
+    "GRIB_jPointsAreConsecutive": 0,
+    "GRIB_jScansPositively": 1,
+    "GRIB_latitudeOfFirstGridPointInDegrees": 21.138123,
+    "GRIB_latitudeOfSouthernPoleInDegrees": 0.0,
+    "GRIB_longitudeOfFirstGridPointInDegrees": 237.280472,
+    "GRIB_longitudeOfSouthernPoleInDegrees": 0.0,
+    "GRIB_missingValue": 3.4028234663852886e+38,
+    "GRIB_name": "10 metre U wind component",
+    "GRIB_parameterName": "u-component of wind",
+    "GRIB_parameterUnits": "m s-1",
+    "GRIB_shapeOfTheEarth": 6,
+    "GRIB_shortName": "10u",
+    "GRIB_stepRange": "0",
+    "GRIB_units": "m s**-1",
+    "long_name": "10 metre U wind component",
+    "units": "m s**-1",
+    "standard_name": "eastward_wind",
+    "grid_mapping": "gribfile_projection",
+    "coordinates": "time step heightAboveGround latitude longitude valid_time",
+    "_FillValue": "AAAAAAAA+H8="
+  },
+  "dimension_names": [
+    "time",
+    "y",
+    "x"
+  ],
+  "zarr_format": 3,
+  "node_type": "array",
+  "storage_transformers": []
+}
