@@ -163,3 +163,23 @@ class RAVEFetcher(BaseFetcher):
 
     def validate_data(self, data: xr.Dataset) -> bool:
         return "FRP_MEAN" in data.data_vars or "rave_frp" in data.data_vars
+    
+    def _download_worker(self, url):
+        name = url.split("/")[-1]
+        local = self.save_dir / name
+        
+        if not local.exists():
+            print(f"Downloading {name}...")
+            try:
+                r = requests.get(url)
+                r.raise_for_status()
+                local.write_bytes(r.content)
+                
+                # --- NEW: Write to log file ---
+                with open(self.save_dir.parent / "download_log.txt", "a") as log:
+                    log.write(f"RAVE DOWNLOAD: {url}\n")
+                    
+            except Exception as e:
+                print(f"Failed to download {name}: {e}")
+                return None
+        return local

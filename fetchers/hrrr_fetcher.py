@@ -15,8 +15,13 @@ DATA_ROOT = PROJECT_ROOT / "data"
 
 class HRRRFetcher(BaseFetcher): # <-- INHERIT
     DEFAULT_VARS = [
-        ":TMP:2 m", ":DPT:2 m", ":UGRD:10 m", ":VGRD:10 m",
-        ":PBLH:", ":PRES:surface:", ":HGT:surface:",
+        ":TMP:2 m", 
+        ":DPT:2 m", 
+        ":UGRD:10 m", 
+        ":VGRD:10 m",
+        ":PBLH:", 
+        ":PRES:surface:", 
+        ":HGT:surface:",
     ]
 
     def __init__(self, model="hrrr", product="sfc", save_dir=None):
