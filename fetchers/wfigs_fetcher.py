@@ -15,8 +15,12 @@ class WFIGSFetcher(BaseFetcher):
         return pd.to_datetime(val, unit='ms') if isinstance(val, (int, float)) else pd.to_datetime(val)
 
     def fetch_data(self, start_time: str, end_time: str, bbox: tuple = None, min_acres: int = 100):
-        start_str = pd.to_datetime(start_time).strftime('%Y-%m-%d %H:%M:%S')
-        end_str = pd.to_datetime(end_time).strftime('%Y-%m-%d %H:%M:%S')
+        # 48-hour wide net to ensure we don't miss fires that started slightly before our window
+        search_start = pd.to_datetime(start_time) - pd.Timedelta(days=2)
+        search_end = pd.to_datetime(end_time) + pd.Timedelta(days=2)
+
+        start_str = search_start.strftime('%Y-%m-%d %H:%M:%S')
+        end_str = search_end.strftime('%Y-%m-%d %H:%M:%S')
 
         where_clause = (
             f"FireDiscoveryDateTime >= '{start_str}' "
@@ -24,6 +28,7 @@ class WFIGSFetcher(BaseFetcher):
             f"AND IncidentTypeCategory = 'WF'"
         )
         
+        # STRICT 100+ Acre Filter (Drops the 140+ tiny spot fires)
         if min_acres: 
             where_clause += f" AND IncidentSize >= {min_acres}"
 
@@ -59,23 +64,29 @@ class WFIGSFetcher(BaseFetcher):
     def validate_data(self, data: gpd.GeoDataFrame) -> bool:
         return data is not None and not data.empty and "geometry" in data.columns
 
-    def generate_fire_tasks(self, gdf: gpd.GeoDataFrame, pad: float = 0.5):
+    def generate_fire_tasks(self, gdf: gpd.GeoDataFrame, base_pad: float = 0.5):
         tasks = []
         for idx, row in gdf.iterrows():
             if row.geometry is None or row.geometry.is_empty: continue
                 
-            # Geometry bounds of a point is just (lon, lat, lon, lat)
+            acres = row.get("IncidentSize", 0)
+            if pd.isna(acres):
+                acres = 0
+                
+            # --- DYNAMIC SPATIAL PADDING ---
+            extra_pad = min((acres / 10000.0) * 0.1, 1.0)
+            dynamic_pad = base_pad + extra_pad
+            
             minx, miny, maxx, maxy = row.geometry.bounds
             
-            # The pad expands it to a 110km x 110km box
-            bbox_tuple = (minx - pad, maxx + pad, miny - pad, maxy + pad)
+            bbox_tuple = (minx - dynamic_pad, maxx + dynamic_pad, miny - dynamic_pad, maxy + dynamic_pad)
             
             tasks.append({
                 "fire_id": row.get("UniqueFireIdentifier", f"fire_{idx}"),
                 "name": row.get("IncidentName", "Unknown"),
                 "start": self._parse_date(row.get("FireDiscoveryDateTime")),
                 "end": self._parse_date(row.get("ContainmentDateTime")), 
-                "acres": row.get("IncidentSize", 0),
+                "acres": acres,
                 "bbox": bbox_tuple
             })
         return tasks
