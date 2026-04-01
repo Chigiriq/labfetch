@@ -1,11 +1,14 @@
 import requests
-from bs4 import BeautifulSoup
-from pathlib import Path
 import xarray as xr
 import pandas as pd
 import warnings
-from urllib.parse import urljoin
 import concurrent.futures
+import os
+
+from bs4 import BeautifulSoup
+from pathlib import Path
+from urllib.parse import urljoin
+
 from .base_fetcher import BaseFetcher 
 
 # ---- xarray + warnings config ----
@@ -44,7 +47,6 @@ class RAVEFetcher(BaseFetcher):
         end_time = pd.to_datetime(end_time)
 
         files = []
-        # Note: 'ME' is the modern pandas frequency for Month End
         months = pd.period_range(start_time, end_time, freq="M")
 
         for p in months:
@@ -163,23 +165,15 @@ class RAVEFetcher(BaseFetcher):
 
     def validate_data(self, data: xr.Dataset) -> bool:
         return "FRP_MEAN" in data.data_vars or "rave_frp" in data.data_vars
-    
-    def _download_worker(self, url):
-        name = url.split("/")[-1]
-        local = self.save_dir / name
         
-        if not local.exists():
-            print(f"Downloading {name}...")
-            try:
-                r = requests.get(url)
-                r.raise_for_status()
-                local.write_bytes(r.content)
-                
-                # --- NEW: Write to log file ---
-                with open(self.save_dir.parent / "download_log.txt", "a") as log:
-                    log.write(f"RAVE DOWNLOAD: {url}\n")
-                    
-            except Exception as e:
-                print(f"Failed to download {name}: {e}")
-                return None
-        return local
+    def cleanup_timestamp(self, timestamp):
+        """Deletes the raw RAVE .nc file for a specific timestamp."""
+        t = pd.to_datetime(timestamp).round("h")
+        if t in self.file_map:
+            local_path = self.file_map[t]
+            if local_path.exists():
+                try:
+                    os.remove(local_path)
+                    del self.file_map[t]
+                except Exception:
+                    pass

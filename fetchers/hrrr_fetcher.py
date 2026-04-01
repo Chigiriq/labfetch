@@ -1,10 +1,13 @@
-from herbie import Herbie
 import pandas as pd
 import xarray as xr
-from pathlib import Path
 import numpy as np
 import warnings
-from .base_fetcher import BaseFetcher # <-- IMPORT BASE CLASS
+import os
+
+from pathlib import Path
+from herbie import Herbie
+
+from .base_fetcher import BaseFetcher
 
 # ---- xarray config ----
 xr.set_options(use_new_combine_kwarg_defaults=True)
@@ -13,7 +16,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = PROJECT_ROOT / "data"
 
-class HRRRFetcher(BaseFetcher): # <-- INHERIT
+class HRRRFetcher(BaseFetcher):
     DEFAULT_VARS = [
         ":TMP:2 m", 
         ":DPT:2 m", 
@@ -25,7 +28,7 @@ class HRRRFetcher(BaseFetcher): # <-- INHERIT
     ]
 
     def __init__(self, model="hrrr", product="sfc", save_dir=None):
-        super().__init__(source_name="HRRR") # <-- INIT BASE
+        super().__init__(source_name="HRRR")
         self.model = model
         self.product = product
         self.save_dir = Path(save_dir) if save_dir else DATA_ROOT / "hrrr"
@@ -48,7 +51,6 @@ class HRRRFetcher(BaseFetcher): # <-- INHERIT
 
         return ds.isel(y=slice(y.min(), y.max() + 1), x=slice(x.min(), x.max() + 1))
 
-    # <-- RENAME TO match BaseFetcher contract
     def fetch_data(self, start_time, end_time, bbox=None, variable=None):
         times = pd.date_range(start_time, end_time, freq="1h")
         combined = None
@@ -90,8 +92,25 @@ class HRRRFetcher(BaseFetcher): # <-- INHERIT
 
         return combined
 
-    # <-- ADD REQUIRED VALIDATION
     def validate_data(self, data: xr.Dataset) -> bool:
         if len(data.data_vars) == 0:
             return False
         return True
+    
+    def cleanup_timestamp(self, timestamp):
+        """Deletes raw HRRR files for a specific timestamp WITHOUT network calls."""
+        try:
+            # Extract the date and hour signature Herbie uses (e.g., '20250107' and 't13z')
+            ts = pd.to_datetime(timestamp)
+            date_str = ts.strftime('%Y%m%d')
+            hour_str = f"t{ts.strftime('%H')}z"
+            
+            # Recursively find and delete any matching files in the save directory
+            for p in self.save_dir.rglob(f"*{date_str}*{hour_str}*"):
+                if p.is_file():
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
