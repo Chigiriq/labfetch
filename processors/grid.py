@@ -1,42 +1,30 @@
 import os
 import xesmf as xe
-from dask.diagnostics import ProgressBar
 import warnings
+from dask.diagnostics import ProgressBar
 
-warnings.filterwarnings("ignore", message="Input array is not F_CONTIGUOUS")
+warnings.filterwarnings("ignore", message="Input array is not F_CONTIGUOUS") # esmf regrid warning
 
-def regrid_rave_to_hrrr(rave_clip, hrrr_clip, weights_path=None, method="bilinear"):
+def regrid_rave_to_hrrr(rave_clip, hrrr_clip, weights_path, method="bilinear"):
     """
-    Regrids ALL variables in rave_clip to the hrrr_clip grid.
-    
-    Args:
-        rave_clip (xr.Dataset): RAVE dataset (source).
-        hrrr_clip (xr.Dataset): HRRR dataset (destination grid).
-        weights_path (str or Path): Path to save/load weights file. 
-                                    If None, weights are calculated in memory (slower).
-        method (str): Regridding method (bilinear, conservative, etc).
+    Regrids RAVE to HRRR using persistent weights to save CPU time.
     """
+    weights_file = str(weights_path)
+    reuse = os.path.exists(weights_file)
     
-    # Logic to handle weights file reuse
-    if weights_path:
-        reuse = os.path.exists(weights_path)
-        filename = str(weights_path) # xESMF expects a string
+    if reuse:
+        print(f"  -> Reusing existing weights: {weights_path.name}")
     else:
-        # If no path provided, do not save a file, do not reuse
-        reuse = False
-        filename = None
+        print(f"  -> Calculating new weights for this fire's BBox...")
 
-    # Create the regridder
     regridder = xe.Regridder(
         rave_clip,
         hrrr_clip,
-        method,
+        method=method,
         reuse_weights=reuse,
-        filename=filename,
+        filename=weights_file,
     )
 
-    print(f"  (Regridding {list(rave_clip.data_vars)}...)")
-    with ProgressBar():
-        rave_rg = regridder(rave_clip)
-
+    rave_rg = regridder(rave_clip)
+    
     return rave_rg

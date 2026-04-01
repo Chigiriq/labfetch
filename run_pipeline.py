@@ -44,6 +44,12 @@ def main():
     data_dir.mkdir(parents=True, exist_ok=True)
     log_path = data_dir / "download_log.txt"
     zarr_path = data_dir / "all_fires_combined.zarr"
+    
+    # PERSISTENT WEIGHTS: Stored in data/weights so they survive the hourly loop
+    weights_dir = data_dir / "weights"
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    
+    # TEMP PROCESSING: For files that truly only need to exist for one hour
     temp_dir = Path("temp_processing")
     temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -61,13 +67,11 @@ def main():
     if args.bbox:
         print(f"\n=== MANUAL BBOX MODE: {args.fire_id} ===")
         try:
-            # Parse "min_lon, min_lat, max_lon, max_lat"
             coords = [float(x.strip()) for x in args.bbox.split(",")]
             if len(coords) != 4:
                 raise ValueError("BBox must have 4 coordinates.")
             
             lon_min, lat_min, lon_max, lat_max = coords
-            # Apply spatial padding to the manual bbox
             bbox_tuple = (
                 lon_min - args.spatial_pad, 
                 lon_max + args.spatial_pad, 
@@ -88,17 +92,15 @@ def main():
             return
     else:
         print("\n=== STEP 1: Identifying Fires via WFIGS ===")
-        # WFIGS uses its own internal logic for the 'discovery' window
         wfigs_gdf = wfigs_fetcher.process(args.start, args.end)
         if wfigs_gdf is None or wfigs_gdf.empty:
             print("No fires found in WFIGS for this range.")
             return
 
-        # Pass user-defined spatial_pad to the generator
         fire_tasks = wfigs_fetcher.generate_fire_tasks(wfigs_gdf, base_pad=args.spatial_pad)
         print(f"Found {len(fire_tasks)} fires to process.")
 
-    # --- STEP 2: Pre-fetching RAVE (Caching files to local disk) ---
+    # --- STEP 2: Pre-fetching RAVE ---
     print("\n=== STEP 2: Pre-fetching RAVE Data ===")
     rave_fetcher.prefetch(args.start, args.end)
     
@@ -110,7 +112,6 @@ def main():
         print(f"\n--- Processing Timestep: {t} ---")
         t_pd = pd.to_datetime(t)
         
-        # Fetch full CONUS datasets for this hour
         hrrr_conus = hrrr_fetcher.process(t, t, bbox=None)
         rave_conus = rave_fetcher.process(t, t, bbox=None)
             
@@ -120,17 +121,13 @@ def main():
 
         for task in fire_tasks:
             fire_id = task["fire_id"]
-            
-            # Use user-defined time_pad
             fire_start = pd.to_datetime(task["start"]) - pd.Timedelta(hours=args.time_pad)
             
-            # If fire isn't contained, we bound it by the end of the requested pipeline run
             if pd.notna(task["end"]):
                 fire_end = pd.to_datetime(task["end"]) + pd.Timedelta(hours=args.time_pad)
             else:
                 fire_end = pd.to_datetime(args.end)
             
-            # Check if this specific fire was active (including padding) during this hour
             if not (fire_start <= t_pd <= fire_end):
                 continue
             
@@ -157,8 +154,11 @@ def main():
                     )
                 rave_subset = rave_subset.assign_coords({"lat": rave_clip.lat, "lon": rave_clip.lon})
 
-                # Regrid RAVE to HRRR
-                weights_file = temp_dir / f"weights_{fire_id}.nc"
+                # --- WEIGHT REUSE IMPLEMENTATION ---
+                # Unique weight file per fire task. 
+                # grid.py will check if this exists and reuse it automatically.
+                weights_file = weights_dir / f"weights_{fire_id}.nc"
+                
                 rave_rg = regrid_rave_to_hrrr(rave_subset, hrrr_clip, weights_path=weights_file)
 
                 # Merge and add metadata
@@ -184,6 +184,8 @@ def main():
 
     # --- STEP 4: Cleanup ---
     print("\n=== STEP 4: Cleaning up local raw data ===")
+    # Note: We keep weights_dir intact in case you run the script again for overlapping ranges, 
+    # but you can add it to this list if you want a totally fresh start each run.
     for d in [data_dir / "hrrr", data_dir / "rave", temp_dir]:
         if d.exists(): shutil.rmtree(d)
         
