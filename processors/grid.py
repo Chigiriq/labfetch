@@ -7,9 +7,7 @@ from contextlib import contextmanager
 @contextmanager
 def silence_c_errors():
     """Redirects OS-level C stderr to /dev/null to completely silence HDF5 panics."""
-    # Open the Linux "black hole"
     devnull = os.open(os.devnull, os.O_WRONLY)
-    # Save the original error channel
     old_stderr = os.dup(2)
     try:
         # Route all C-level errors into the black hole

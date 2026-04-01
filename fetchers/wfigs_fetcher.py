@@ -15,7 +15,6 @@ class WFIGSFetcher(BaseFetcher):
         return pd.to_datetime(val, unit='ms') if isinstance(val, (int, float)) else pd.to_datetime(val)
 
     def fetch_data(self, start_time: str, end_time: str, bbox: tuple = None, min_acres: int = 100):
-        # 48-hour wide net to ensure we don't miss fires that started slightly before our window
         search_start = pd.to_datetime(start_time) - pd.Timedelta(days=2)
         search_end = pd.to_datetime(end_time) + pd.Timedelta(days=2)
 
@@ -28,7 +27,7 @@ class WFIGSFetcher(BaseFetcher):
             f"AND IncidentTypeCategory = 'WF'"
         )
         
-        # STRICT 100+ Acre Filter (Drops the 140+ tiny spot fires)
+        # Acre filter
         if min_acres: 
             where_clause += f" AND IncidentSize >= {min_acres}"
 
