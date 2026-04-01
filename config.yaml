@@ -1,0 +1,17 @@
+paths:
+  data_root: "./data"
+  hrrr_dir: "hrrr_raw"
+  rave_dir: "rave_raw"
+  weights_dir: "regrid_weights"
+  zarr_output: "all_fires_combined.zarr"
+  log_file: "pipeline.log"
+
+pipeline_defaults:
+  spatial_pad: 0.5
+  time_pad: 24
+  min_acres: 100
+
+fetchers:
+  hrrr_model: "hrrr"
+  hrrr_product: "sfc"
+  rave_base_url: "https://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km/"
