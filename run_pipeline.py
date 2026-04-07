@@ -1,7 +1,6 @@
 import sys
 import os
 # --- SILENCE HDF5 C-LIBRARY WARNINGS ---
-# has to go here before other packages load
 os.environ["HDF5_DISABLE_VERSION_CHECK"] = "1"
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 os.environ["HDF5_PRINT_ERRORS"] = "FALSE"
@@ -17,6 +16,8 @@ import logging
 import concurrent.futures
 import time
 from pathlib import Path
+
+from shapely.geometry import box 
 
 # --- PROJECT SETUP ---
 sys.dont_write_bytecode = True
@@ -48,7 +49,6 @@ def load_config(config_path="config.yaml"):
 def fetch_data_task(hrrr_fetcher, rave_fetcher, timestamp):
     """Worker function to download data in the background."""
     try:
-        # These calls trigger the internal download/caching logic for one specific hour
         h = hrrr_fetcher.process(timestamp, timestamp, bbox=None)
         r = rave_fetcher.process(timestamp, timestamp, bbox=None)
         return h, r
@@ -95,53 +95,88 @@ def main():
 
     # --- STEP 1: DISCOVERY & VALIDATION ---
     valid_tasks = []
-    invalid_summary = []
+    incomplete_summary = []
+
+    logger.info("Querying WFIGS for fire incidents...")
+    wfigs_gdf = wfigs_fetcher.process(args.start, args.end)
+    raw_tasks = []
 
     if args.bbox:
-        logger.info(f"Manual BBox Mode: {args.fire_id}")
+        logger.info("Manual BBox Mode: Intersecting with WFIGS...")
         coords = [float(x.strip()) for x in args.bbox.split(",")]
-        bbox_tuple = (coords[0]-args.spatial_pad, coords[2]+args.spatial_pad, 
-                      coords[1]-args.spatial_pad, coords[3]+args.spatial_pad)
-        valid_tasks = [{"fire_id": args.fire_id, "name": "Manual", "start": args.start, "end": args.end, "acres": 0, "bbox": bbox_tuple}]
+        bbox_tuple = (
+            coords[2] - args.spatial_pad,  # lon_min
+            coords[3] + args.spatial_pad,  # lon_max
+            coords[0] - args.spatial_pad,  # lat_min
+            coords[1] + args.spatial_pad   # lat_max
+        )
+
+        user_poly = box(bbox_tuple[0], bbox_tuple[2], bbox_tuple[1], bbox_tuple[3])
+        
+        if wfigs_gdf is not None and not wfigs_gdf.empty:
+            intersecting_fires = wfigs_gdf[wfigs_gdf.intersects(user_poly)]
+            if not intersecting_fires.empty:
+                base_tasks = wfigs_fetcher.generate_fire_tasks(intersecting_fires, base_pad=0)
+                for t in base_tasks:
+                    t["bbox"] = bbox_tuple 
+                    t["fire_id"] = f"{t['fire_id']}_custom_cut"
+                    t["name"] = f"{t['name']} (Custom BBox)"
+                    raw_tasks.append(t)
+
+        if not raw_tasks:
+            logger.warning("No fires found in provided bounding box. Creating fallback task to fetch HRRR.")
+            raw_tasks = [{
+                "fire_id": f"{args.fire_id}_no_wfigs",
+                "name": "Manual Override (No WFIGS Fire)",
+                "start": args.start,
+                "end": args.end,
+                "acres": 0,
+                "bbox": bbox_tuple,
+                "missing_wfigs": True 
+            }]
     else:
-        logger.info("Querying WFIGS for fire incidents...")
-        wfigs_gdf = wfigs_fetcher.process(args.start, args.end)
         if wfigs_gdf is None or wfigs_gdf.empty: 
             logger.warning("No fires found in WFIGS for this range. Exiting.")
             return
-            
         raw_tasks = wfigs_fetcher.generate_fire_tasks(wfigs_gdf, base_pad=args.spatial_pad)
         
-        for task in raw_tasks:
-            f_start = pd.to_datetime(task["start"]) - pd.Timedelta(hours=args.time_pad)
-            
-            # Handle open-ended fires safely
-            if task.get("end") is None or pd.isna(task.get("end")):
-                f_end = end_dt + pd.Timedelta(hours=args.time_pad)
-            else:
-                f_end = pd.to_datetime(task["end"]) + pd.Timedelta(hours=args.time_pad)
-
-            # Validate overlap
-            if (f_start <= end_dt) and (f_end >= start_dt):
-                valid_tasks.append(task)
-            else:
-                invalid_summary.append(f"{task['fire_id']} (Outside temporal window)")
-
-        # --- The Restored Logging Block ---
-        logger.info(f"{len(raw_tasks)} fires found - {len(valid_tasks)} valid")
-
-        if valid_tasks:
-            logger.info("--- VALID FIRE IDs ---")
-            for vt in valid_tasks:
-                logger.info(f"   + {vt['fire_id']} ({vt['name']})")
+    for task in raw_tasks:
+        f_start = pd.to_datetime(task["start"]) - pd.Timedelta(hours=args.time_pad)
         
-        if invalid_summary:
-            logger.info("--- INVALID/SKIPPED FIRE IDs ---")
-            for inv in invalid_summary:
-                logger.info(f"   - {inv}")
+        if task.get("end") is None or pd.isna(task.get("end")):
+            f_end = end_dt + pd.Timedelta(hours=args.time_pad)
+        else:
+            f_end = pd.to_datetime(task["end"]) + pd.Timedelta(hours=args.time_pad)
+
+        # Check if requested pipeline range FULLY ENCAPSULATES the fire
+        is_fully_contained = (start_dt <= f_start) and (end_dt >= f_end)
+        
+        if is_fully_contained:
+            task["temporal_clip_status"] = "FULLY_CONTAINED"
+        else:
+            task["temporal_clip_status"] = "CLIPPED"
+            start_str = pd.to_datetime(task["start"]).strftime('%Y-%m-%d %H:%M') if pd.notnull(task.get("start")) else "Unknown"
+            end_str = pd.to_datetime(task["end"]).strftime('%Y-%m-%d %H:%M') if pd.notnull(task.get("end")) else "Ongoing"
+            incomplete_summary.append(f"{task['fire_id']} (Clipped: Fire active {start_str} to {end_str})")
+
+        # ALWAYS append to valid_tasks, no skipping
+        valid_tasks.append(task)
+
+    logger.info(f"{len(valid_tasks)} total tasks queued for processing.")
+
+    if valid_tasks:
+        logger.info("--- FIRE IDs QUEUED ---")
+        for vt in valid_tasks:
+            status = "" if vt["temporal_clip_status"] == "FULLY_CONTAINED" else "[CLIPPED]"
+            logger.info(f"   + {vt['fire_id']} ({vt['name']}) {status}")
+    
+    if incomplete_summary:
+        logger.info("--- INCOMPLETE TIMEFRAME SUMMARY ---")
+        for inc in incomplete_summary:
+            logger.info(f"   ~ {inc}")
 
     if not valid_tasks: 
-        logger.warning("No valid tasks remain after filtering. Exiting.")
+        logger.warning("No valid tasks remain. Exiting.")
         return
         
     fire_tasks = valid_tasks
@@ -154,53 +189,58 @@ def main():
 
     # --- STEP 3: MULTITHREADED PROCESSING LOOP ---
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    
-    # Pre-fetch the FIRST hour
     future_fetch = executor.submit(fetch_data_task, hrrr_fetcher, rave_fetcher, times[0])
 
     for i, t in enumerate(times):
         logger.info(f"Processing hour {i+1}/{len(times)}: {t}")
         
-        # Get data from background thread (blocks until download finishes)
         hrrr_conus, rave_conus = future_fetch.result()
         
-        # Immediately start fetching the NEXT hour
         if i + 1 < len(times):
             future_fetch = executor.submit(fetch_data_task, hrrr_fetcher, rave_fetcher, times[i+1])
 
-        if hrrr_conus is None or rave_conus is None:
+        if hrrr_conus is None: 
             continue
 
         for task in fire_tasks:
-            # --- FIXED: Use the safe temporal check for open-ended fires ---
-            f_start = pd.to_datetime(task["start"]) - pd.Timedelta(hours=args.time_pad)
-            
-            if task.get("end") is None or pd.isna(task.get("end")):
-                f_end = end_dt + pd.Timedelta(hours=args.time_pad)
-            else:
-                f_end = pd.to_datetime(task["end"]) + pd.Timedelta(hours=args.time_pad)
-
-            if not (f_start <= t <= f_end): 
-                continue
-            # ---------------------------------------------------------------
+            # We removed the temporal overlap check (if not (f_start <= t <= f_end): continue)
+            # The program will now fully process every timestamp in the requested range
             
             try:
                 hrrr_clip = hrrr_fetcher._spatial_subset(hrrr_conus, *task["bbox"])
-                rave_clip = rave_fetcher._spatial_subset(rave_conus, *task["bbox"])
-                
-                # --- FIXED: Safety check in case the fire is outside the satellite grid ---
-                if hrrr_clip is None or rave_clip is None: 
+                if hrrr_clip is None: 
                     continue
-                
-                weights_file = weights_dir / f"weights_{task['fire_id']}.nc"
-                hrrr_clip = hrrr_clip.rename({"latitude": "lat", "longitude": "lon"})
-                rave_clip = rave_clip.rename({"grid_latt": "lat", "grid_lont": "lon"})
-                
-                rave_subset = xr.Dataset({"rave_frp": rave_clip["FRP_MEAN"].fillna(0.0)})
-                rave_subset = rave_subset.assign_coords({"lat": rave_clip.lat, "lon": rave_clip.lon})
 
-                rave_rg = regrid_rave_to_hrrr(rave_subset, hrrr_clip, weights_path=weights_file)
-                merged = xr.merge([hrrr_clip, rave_rg], compat="override")
+                rave_clip = None
+                if rave_conus is not None:
+                    try:
+                        rave_clip = rave_fetcher._spatial_subset(rave_conus, *task["bbox"])
+                    except Exception:
+                        pass
+                
+                hrrr_clip = hrrr_clip.rename({"latitude": "lat", "longitude": "lon"})
+
+                if rave_clip is not None:
+                    weights_file = weights_dir / f"weights_{task['fire_id']}.nc"
+                    rave_clip = rave_clip.rename({"grid_latt": "lat", "grid_lont": "lon"})
+                    
+                    rave_subset = xr.Dataset({"rave_frp": rave_clip["FRP_MEAN"].fillna(0.0)})
+                    rave_subset = rave_subset.assign_coords({"lat": rave_clip.lat, "lon": rave_clip.lon})
+
+                    rave_rg = regrid_rave_to_hrrr(rave_subset, hrrr_clip, weights_path=weights_file)
+                    merged = xr.merge([hrrr_clip, rave_rg], compat="override")
+                else:
+                    logger.debug(f"RAVE missing for {task['fire_id']} at {t}. Filling with NaNs.")
+                    empty_frp = xr.DataArray(np.nan, coords={"y": hrrr_clip.y, "x": hrrr_clip.x}, dims=["y", "x"])
+                    merged = hrrr_clip.assign(rave_frp=empty_frp)
+                    merged.attrs["RAVE_STATUS"] = "ERROR_OR_MISSING_DATA"
+
+                # Tag Temporal Status and WFIGS status directly into the Zarr metadata
+                merged.attrs["TEMPORAL_CLIP_STATUS"] = task["temporal_clip_status"]
+                
+                if task.get("missing_wfigs"):
+                    merged.attrs["WFIGS_STATUS"] = "NO_FIRE_IN_BBOX"
+
                 if "time" not in merged.dims: merged = merged.expand_dims("time")
                 
                 mode = "a" if fire_initialized[task["fire_id"]] else "w"
@@ -211,14 +251,13 @@ def main():
             except Exception as e:
                 logger.error(f"Error on {task['name']} at {t}: {e}")
 
-        # CLEANUP CURRENT HOUR FROM DISK
-        hrrr_conus.close(); rave_conus.close()
+        hrrr_conus.close()
+        if rave_conus is not None: rave_conus.close()
         hrrr_fetcher.cleanup_timestamp(t)
         rave_fetcher.cleanup_timestamp(t)
 
     executor.shutdown()
     
-    # Final Cleanup
     for d in [hrrr_dir, rave_dir, weights_dir]:
         if d.exists(): shutil.rmtree(d)
         

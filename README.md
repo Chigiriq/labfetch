@@ -159,38 +159,81 @@ Because Zarr is hierarchical, the output file contains separate **Groups** for e
 Zarr stores require you to specify the `group` (the specific fire) when loading the data into xarray.
 
 ```python
+import zarr
 import xarray as xr
 import matplotlib.pyplot as plt
+import numpy as np
+from IPython.display import clear_output
+import time
+import cartopy.crs as ccrs 
+import cartopy.feature as cfeature
+from processors.utils import normalize_lon
 
-# 1. Load Data for a specific Fire ID
-# You can use xr.open_zarr("...", group=None) to see available groups
-zarr_path = "data/20250107_1000-20250108_1000_WF.zarr"
-fire_id = "2025-CALFD-000738" 
+zarr_path = "data\\20250107_1000-20250108_1000_WF.zarr"
 
-ds = xr.open_zarr(zarr_path, group=fire_id)
+store = zarr.open_group(zarr_path, mode='r')
+available_fires = list(store.group_keys())
 
-# 2. Pick specific time indices (e.g., First, Middle, Last)
-indices = [0, len(ds.time)//2, len(ds.time)-1]
-
-# 3. Select variables
-target_vars = ["rave_frp", "t2m", "elevation", "u10", "v10"]
-
-for var in target_vars:
-    if var not in ds: continue
+if not available_fires:
+    print("No fires found in the Zarr store!")
+else:
+    for fire_id in available_fires:
+        ds = xr.open_zarr(zarr_path, group=fire_id, consolidated=False)
         
-    print(f"--- Plotting Evolution of {var} ---")
+        fire_status = ds.attrs.get('TEMPORAL_CLIP_STATUS', 'Unknown')
+
+        print(f"({fire_id}) → {fire_status}")
+
+fire_id = available_fires[3]
+ds = xr.open_zarr(zarr_path, group=fire_id, consolidated=False)
+fire_name = ds.attrs.get('Fire_Name', '')
+
+print(f"\n=== Target Fire: {fire_name} ({fire_id}) ===")
+print(f"Reported Acres: {ds.attrs.get('Fire_Acres', 'Unknown')}")
+print(f"Time steps captured: {ds.sizes['time']} hours")
+print(f"Max FRP: {ds['rave_frp'].max().compute().item()}")
+print("-" * 40)
+
+time.sleep(2) # Pause so you can read the metadata
+
+# 3. Loop through EVERY time step for the animation
+for time_idx in range(ds.sizes['time']):
+    ds_hour = ds.isel(time=time_idx)
+    current_time = str(ds_hour.time.values)[:16] 
     
-    # Select specific times and plot in a row
-    subset = ds[var].isel(time=indices)
-    
-    subset.plot(
-        col="time",
-        col_wrap=3,
-        x="lon", 
-        y="lat",
-        cmap="turbo",
-        robust=False,
-        figsize=(15, 4)
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig.suptitle(f"{fire_name} Conditions | Time: {current_time} UTC", fontsize=16, fontweight='bold')
+
+    # --- PANEL 1: Temperature ---
+    temp_c = ds_hour['t2m'] - 273.15
+    temp_c.plot(
+        ax=axes[0], cmap="Spectral_r", 
+        vmin=5, vmax=35, # LOCKED SCALE: 5C to 35C 
+        cbar_kwargs={'label': 'Temperature (°C)'}
     )
+    axes[0].set_title("HRRR: 2m Temperature")
+
+    # --- PANEL 2: Wind Speed ---
+    wind_speed = np.sqrt(ds_hour['u10']**2 + ds_hour['v10']**2)
+    wind_speed.plot(
+        ax=axes[1], cmap="viridis", 
+        vmin=0, vmax=20, # LOCKED SCALE: 0 to 20 m/s
+        cbar_kwargs={'label': 'Wind Speed (m/s)'}
+    )
+    axes[1].set_title("HRRR: 10m Wind Speed")
+
+    # --- PANEL 3: Fire Radiative Power ---
+    ds_hour['rave_frp'].plot(
+        ax=axes[2], cmap="hot", 
+        vmax=120, vmin=0, # LOCKED SCALE for FRP
+        cbar_kwargs={'label': 'FRP (MW)'}
+    )
+    axes[2].set_title("RAVE: Fire Radiative Power")
+
+    plt.tight_layout()
     plt.show()
+    
+    # Clear the output for the next frame
+    # time.sleep(0.5)
+    # clear_output(wait=True)
 ```
