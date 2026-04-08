@@ -10,13 +10,13 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 import shutil
-
 import yaml
 import logging
 import concurrent.futures
 import time
-from pathlib import Path
+import zarr
 
+from pathlib import Path
 from shapely.geometry import box 
 
 # --- PROJECT SETUP ---
@@ -68,13 +68,17 @@ def main():
     parser.add_argument("--time_pad", type=int, default=conf_defaults['time_pad'])
     parser.add_argument("--bbox", type=str, default=None)
     parser.add_argument("--fire_id", type=str, default="manual_fetch")
+    parser.add_argument("--zarr_store", type=str, default=None, help="Specific Zarr store to append to. If not provided, creates a new one.")
+    parser.add_argument("--ongoing_days", type=int, default=14, help="Default duration in days to assign to ongoing fires with no end date.")
+    
     args = parser.parse_args()
 
-    # Dynamic Filenaming
-    fmt = "%Y%m%d_%H%M"
+    # Data Output naming
     start_dt = pd.to_datetime(args.start)
     end_dt = pd.to_datetime(args.end)
-    zarr_name = f"{start_dt.strftime(fmt)}-{end_dt.strftime(fmt)}_WF.zarr"
+    
+    # Default to a master database name instead of time-bound names
+    zarr_name = args.zarr_store if args.zarr_store else "master_wildfire_db.zarr"
 
     # Path Init
     root = Path(args.data_root)
@@ -89,11 +93,36 @@ def main():
 
     logger = setup_logging(log_path)
     
+    # Check existing zarr groups for appending and their state
+    existing_groups = []
+    fire_state = {}
+
+    if zarr_path.exists():
+        try:
+            zstore = zarr.open(zarr_path, mode='r')
+            existing_groups = list(zstore.group_keys())
+            logger.info(f"Found existing Zarr store with {len(existing_groups)} fires. Reading temporal states to prevent duplicates...")
+            
+            for fid in existing_groups:
+                try:
+                    ds_existing = xr.open_zarr(zarr_path, group=fid, consolidated=False)
+                    fire_state[fid] = {
+                        "times": pd.DatetimeIndex(ds_existing.time.values),
+                        "vars": set(ds_existing.data_vars.keys())
+                    }
+                    ds_existing.close()
+                except Exception as e:
+                    logger.warning(f"Could not read state for {fid}: {e}")
+                    fire_state[fid] = {"times": pd.DatetimeIndex([]), "vars": set()}
+                    
+        except Exception as e:
+            logger.warning(f"Could not read existing Zarr store: {e}")
+
     wfigs_fetcher = WFIGSFetcher()
     hrrr_fetcher = HRRRFetcher(save_dir=hrrr_dir)
     rave_fetcher = RAVEFetcher(save_dir=rave_dir)
 
-    # --- STEP 1: DISCOVERY & VALIDATION ---
+    # --- STEP 1: Discovery & Validation ---
     valid_tasks = []
     incomplete_summary = []
 
@@ -140,15 +169,17 @@ def main():
             return
         raw_tasks = wfigs_fetcher.generate_fire_tasks(wfigs_gdf, base_pad=args.spatial_pad)
         
-    for task in raw_tasks:
-        f_start = pd.to_datetime(task["start"]) - pd.Timedelta(hours=args.time_pad)
-        
-        if task.get("end") is None or pd.isna(task.get("end")):
-            f_end = end_dt + pd.Timedelta(hours=args.time_pad)
-        else:
-            f_end = pd.to_datetime(task["end"]) + pd.Timedelta(hours=args.time_pad)
 
-        # Check if requested pipeline range FULLY ENCAPSULATES the fire
+    for task in raw_tasks:
+        # Handle 'ongoing' fires with no specified end date
+        if task.get("end") is None or pd.isna(task.get("end")):
+            task["end"] = pd.to_datetime(task["start"]) + pd.Timedelta(days=args.ongoing_days)
+            task["ongoing_capped"] = True
+
+        f_start = pd.to_datetime(task["start"]) - pd.Timedelta(hours=args.time_pad)
+        f_end = pd.to_datetime(task["end"]) + pd.Timedelta(hours=args.time_pad)
+
+        # Check if requested pipeline range fully encapsulates the fire
         is_fully_contained = (start_dt <= f_start) and (end_dt >= f_end)
         
         if is_fully_contained:
@@ -156,7 +187,11 @@ def main():
         else:
             task["temporal_clip_status"] = "CLIPPED"
             start_str = pd.to_datetime(task["start"]).strftime('%Y-%m-%d %H:%M') if pd.notnull(task.get("start")) else "Unknown"
-            end_str = pd.to_datetime(task["end"]).strftime('%Y-%m-%d %H:%M') if pd.notnull(task.get("end")) else "Ongoing"
+
+            # Modify existing loggin to show if artificial cap exits
+            end_val = pd.to_datetime(task["end"]).strftime('%Y-%m-%d %H:%M')
+            end_str = f"{end_val} (Ongoing Capped)" if task.get("ongoing_capped") else end_val
+
             incomplete_summary.append(f"{task['fire_id']} (Clipped: Fire active {start_str} to {end_str})")
 
         # ALWAYS append to valid_tasks, no skipping
@@ -180,14 +215,37 @@ def main():
         return
         
     fire_tasks = valid_tasks
-
-    # --- STEP 2: RAVE PREFETCH ---
-    rave_fetcher.prefetch(args.start, args.end)
     
-    fire_initialized = {task["fire_id"]: False for task in fire_tasks}
+    # Fire is already in the Zarr store: append, Else: write a new group
+    fire_initialized = {task["fire_id"]: (task["fire_id"] in existing_groups) for task in fire_tasks}
     times = pd.date_range(args.start, args.end, freq="1h")
 
-    # --- STEP 3: MULTITHREADED PROCESSING LOOP ---
+    # --- Only download new data ---
+    times_to_process = []
+    for t in times:
+        needs_processing = False
+        for task in fire_tasks:
+            fid = task["fire_id"]
+            state = fire_state.get(fid, {"times": pd.DatetimeIndex([]), "vars": set()})
+            if t not in state["times"]:
+                needs_processing = True
+                break
+        
+        if needs_processing:
+            times_to_process.append(t)
+            
+    times = pd.DatetimeIndex(times_to_process)
+    
+    if len(times) == 0:
+        logger.info("All requested hours already exist for all fires. Exiting.")
+        return
+
+    # --- STEP 2: Rave Prefetch ---
+    # rave_fetcher.prefetch(args.start, args.end)
+    logger.info(f"Prefetching RAVE data for missing range: {times[0]} to {times[-1]}")
+    rave_fetcher.prefetch(times[0], times[-1])
+
+    # --- STEP 3: Multithreaded Proccess Loop ---
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     future_fetch = executor.submit(fetch_data_task, hrrr_fetcher, rave_fetcher, times[0])
 
@@ -202,11 +260,12 @@ def main():
         if hrrr_conus is None: 
             continue
 
-        for task in fire_tasks:
-            # We removed the temporal overlap check (if not (f_start <= t <= f_end): continue)
-            # The program will now fully process every timestamp in the requested range
-            
+        for task in fire_tasks:           
             try:
+                fid = task["fire_id"]
+                state = fire_state.get(fid, {"times": pd.DatetimeIndex([]), "vars": set()})
+                hour_exists = t in state["times"]
+
                 hrrr_clip = hrrr_fetcher._spatial_subset(hrrr_conus, *task["bbox"])
                 if hrrr_clip is None: 
                     continue
@@ -221,7 +280,7 @@ def main():
                 hrrr_clip = hrrr_clip.rename({"latitude": "lat", "longitude": "lon"})
 
                 if rave_clip is not None:
-                    weights_file = weights_dir / f"weights_{task['fire_id']}.nc"
+                    weights_file = weights_dir / f"weights_{fid}.nc"
                     rave_clip = rave_clip.rename({"grid_latt": "lat", "grid_lont": "lon"})
                     
                     rave_subset = xr.Dataset({"rave_frp": rave_clip["FRP_MEAN"].fillna(0.0)})
@@ -230,7 +289,6 @@ def main():
                     rave_rg = regrid_rave_to_hrrr(rave_subset, hrrr_clip, weights_path=weights_file)
                     merged = xr.merge([hrrr_clip, rave_rg], compat="override")
                 else:
-                    logger.debug(f"RAVE missing for {task['fire_id']} at {t}. Filling with NaNs.")
                     empty_frp = xr.DataArray(np.nan, coords={"y": hrrr_clip.y, "x": hrrr_clip.x}, dims=["y", "x"])
                     merged = hrrr_clip.assign(rave_frp=empty_frp)
                     merged.attrs["RAVE_STATUS"] = "ERROR_OR_MISSING_DATA"
@@ -238,16 +296,53 @@ def main():
                 # Tag Temporal Status and WFIGS status directly into the Zarr metadata
                 merged.attrs["TEMPORAL_CLIP_STATUS"] = task["temporal_clip_status"]
                 
+                if task.get("ongoing_capped"):
+                    merged.attrs["ONGOING_STATUS"] = "ARTIFICIALLY_CAPPED"
+
                 if task.get("missing_wfigs"):
                     merged.attrs["WFIGS_STATUS"] = "NO_FIRE_IN_BBOX"
 
                 if "time" not in merged.dims: merged = merged.expand_dims("time")
                 
-                mode = "a" if fire_initialized[task["fire_id"]] else "w"
-                merged.to_zarr(zarr_path, group=task["fire_id"], mode=mode if mode == "w" else None, 
-                               append_dim="time" if mode == "a" else None, consolidated=False)
-                fire_initialized[task["fire_id"]] = True
+                current_vars = set(merged.data_vars.keys())
+                new_vars = current_vars - state["vars"]
+
+                # --- Append Decision Logic ---
+                if hour_exists and not new_vars:
+                    # Hour exists and no new columns are being added. Safely skip to avoid duplicates.
+                    merged.close()
+                    continue
+                    
+                if hour_exists and new_vars:
+                    # Hour exists, but a new column was detected. Drop old columns and append only the new variable.
+                    logger.info(f"[{fid}] Appending new variable(s) {new_vars} to existing timestamp {t}")
+                    vars_to_drop = current_vars.intersection(state["vars"])
+                    merged = merged.drop_vars(vars_to_drop)
+                    
+                    mode = "a"
+                    append_dim = None # Required for variable appending
+                else:
+                    # Standard Write or Temporal Append
+                    mode = "a" if fire_initialized[fid] else "w"
+                    append_dim = "time" if mode == "a" else None
+
+                merged.to_zarr(
+                    zarr_path, 
+                    group=fid, 
+                    mode=mode if mode == "w" else "a", 
+                    append_dim=append_dim, 
+                    consolidated=False
+                )
+                
+                fire_initialized[fid] = True
+                
+                # Update Tracker
+                state["times"] = state["times"].union([t])
+                state["vars"].update(new_vars)
+                fire_state[fid] = state
+                
                 merged.close()
+                
             except Exception as e:
                 logger.error(f"Error on {task['name']} at {t}: {e}")
 
