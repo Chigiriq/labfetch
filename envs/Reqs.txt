@@ -42,6 +42,10 @@ s3fs
 # Domain Specific
 herbie-data
 
+# Google Earth Engine
+earthengine-api
+xee
+
 # Utilities
 click
 joblib

@@ -27,8 +27,9 @@ if PROJECT_ROOT not in sys.path:
 
 from fetchers.hrrr_fetcher import HRRRFetcher
 from fetchers.rave_fetcher import RAVEFetcher
-from fetchers.wfigs_fetcher import WFIGSFetcher 
-from processors.grid import regrid_rave_to_hrrr
+from fetchers.wfigs_fetcher import WFIGSFetcher
+from fetchers.dw_fetcher import DWFetcher
+from processors.grid import regrid_rave_to_hrrr, regrid_categorical_to_hrrr
 
 def setup_logging(log_path):
     """Industry standard logging configuration."""
@@ -121,6 +122,7 @@ def main():
     wfigs_fetcher = WFIGSFetcher()
     hrrr_fetcher = HRRRFetcher(save_dir=hrrr_dir)
     rave_fetcher = RAVEFetcher(save_dir=rave_dir)
+    dw_fetcher = DWFetcher()
 
     # --- STEP 1: Discovery & Validation ---
     valid_tasks = []
@@ -216,6 +218,51 @@ def main():
         
     fire_tasks = valid_tasks
     
+    # Dynamic Wolrd
+    logger.info("Initializing static pre-fire features (Dynamic World)...")
+    template_hrrr = hrrr_fetcher.process(args.start, args.start, bbox=None)
+
+    for task in fire_tasks:
+        fid = task["fire_id"]
+        state = fire_state.get(fid, {"times": pd.DatetimeIndex([]), "vars": set()})
+        
+        if "dw_landcover" not in state["vars"] and not task.get("missing_wfigs"):
+            logger.info(f"[{fid}] Fetching pre-fire Dynamic World landcover...")
+            try:
+                dw_ds = dw_fetcher.process(task["start"], task["start"], bbox=task["bbox"])
+                
+                if dw_ds is not None and template_hrrr is not None:
+                    hrrr_target = hrrr_fetcher._spatial_subset(template_hrrr, *task["bbox"])
+                    hrrr_target = hrrr_target.rename({"latitude": "lat", "longitude": "lon"})
+                    
+                    weights_file = weights_dir / f"weights_dw_{fid}.nc"
+                    dw_rg = regrid_categorical_to_hrrr(dw_ds, hrrr_target, weights_path=weights_file)
+                    
+                    if "time" in dw_rg.dims:
+                        dw_rg = dw_rg.isel(time=0).drop_vars("time")
+                        
+                    mode = "a" if fid in existing_groups else "w"
+                    dw_rg.to_zarr(
+                        zarr_path, 
+                        group=fid, 
+                        mode=mode, 
+                        append_dim=None, 
+                        consolidated=False
+                    )
+                    
+                    if fid not in existing_groups:
+                        existing_groups.append(fid)
+                    state["vars"].add("dw_landcover")
+                    fire_state[fid] = state
+                    logger.info(f"[{fid}] Dynamic World written to Zarr.")
+                    
+            except Exception as e:
+                logger.error(f"[{fid}] Failed to process Dynamic World: {e}")
+
+    if template_hrrr is not None:
+        template_hrrr.close()
+        hrrr_fetcher.cleanup_timestamp(args.start)
+
     # Fire is already in the Zarr store: append, Else: write a new group
     fire_initialized = {task["fire_id"]: (task["fire_id"] in existing_groups) for task in fire_tasks}
     times = pd.date_range(args.start, args.end, freq="1h")

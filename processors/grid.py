@@ -47,3 +47,26 @@ def regrid_rave_to_hrrr(rave_ds, hrrr_ds, weights_path):
     del regridder
     
     return rave_rg
+
+# Dynamic World Regridder
+def regrid_categorical_to_hrrr(cat_ds, hrrr_ds, weights_path):
+    """
+    Regrids categorical data (like Dynamic World landcover) to the HRRR grid.
+    MUST use nearest neighbor to preserve categorical integer labels.
+    """
+    weights_exist = Path(weights_path).exists()
+    
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with silence_c_errors():
+            regridder = xe.Regridder(
+                cat_ds, 
+                hrrr_ds, 
+                "nearest_s2d", # Strict nearest neighbor
+                filename=str(weights_path),
+                reuse_weights=weights_exist
+            )
+            
+        cat_rg = regridder(cat_ds)
+    del regridder
+    return cat_rg
