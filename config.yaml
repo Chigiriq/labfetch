@@ -10,6 +10,7 @@ pipeline_defaults:
   spatial_pad: 0.5
   time_pad: 24
   min_acres: 100
+  ongoing_days: 4 # for fires w/ no specified end date
 
 fetchers:
   hrrr_model: "hrrr"

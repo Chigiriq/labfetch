@@ -69,7 +69,7 @@ def main():
     parser.add_argument("--bbox", type=str, default=None)
     parser.add_argument("--fire_id", type=str, default="manual_fetch")
     parser.add_argument("--zarr_store", type=str, default=None, help="Specific Zarr store to append to. If not provided, creates a new one.")
-    parser.add_argument("--ongoing_days", type=int, default=14, help="Default duration in days to assign to ongoing fires with no end date.")
+    parser.add_argument("--ongoing_days", type=int, default=conf_defaults.get('ongoing_days', 14), help="Default duration in days to assign to ongoing fires with no end date.")
     
     args = parser.parse_args()
 
@@ -175,6 +175,7 @@ def main():
         if task.get("end") is None or pd.isna(task.get("end")):
             task["end"] = pd.to_datetime(task["start"]) + pd.Timedelta(days=args.ongoing_days)
             task["ongoing_capped"] = True
+            task["end_date_type"] = "Ongoing Capped"
 
         f_start = pd.to_datetime(task["start"]) - pd.Timedelta(hours=args.time_pad)
         f_end = pd.to_datetime(task["end"]) + pd.Timedelta(hours=args.time_pad)
@@ -295,6 +296,9 @@ def main():
 
                 # Tag Temporal Status and WFIGS status directly into the Zarr metadata
                 merged.attrs["TEMPORAL_CLIP_STATUS"] = task["temporal_clip_status"]
+                
+                if task.get("end_date_type"):
+                    merged.attrs["END_DATE_TYPE"] = task["end_date_type"]
                 
                 if task.get("ongoing_capped"):
                     merged.attrs["ONGOING_STATUS"] = "ARTIFICIALLY_CAPPED"

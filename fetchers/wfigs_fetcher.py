@@ -11,7 +11,8 @@ class WFIGSFetcher(BaseFetcher):
         super().__init__(source_name="WFIGS")
 
     def _parse_date(self, val):
-        if not val: return None
+        if not val or pd.isna(val): 
+            return None
         return pd.to_datetime(val, unit='ms') if isinstance(val, (int, float)) else pd.to_datetime(val)
 
     def fetch_data(self, start_time: str, end_time: str, bbox: tuple = None, min_acres: int = 100):
@@ -72,19 +73,31 @@ class WFIGSFetcher(BaseFetcher):
             if pd.isna(acres):
                 acres = 0
                 
-            # --- DYNAMIC SPATIAL PADDING ---
+            # --- Spatial Padding ---
             extra_pad = min((acres / 10000.0) * 0.1, 1.0)
             dynamic_pad = base_pad + extra_pad
             
             minx, miny, maxx, maxy = row.geometry.bounds
-            
             bbox_tuple = (minx - dynamic_pad, maxx + dynamic_pad, miny - dynamic_pad, maxy + dynamic_pad)
+            
+            # --- End Date Prio ---
+            end_date = self._parse_date(row.get("FireOutDateTime"))
+            end_date_type = "FireOutDateTime" if end_date is not None else None # ---> NEW
+            
+            if end_date is None:
+                end_date = self._parse_date(row.get("ControlDateTime"))
+                if end_date is not None: end_date_type = "ControlDateTime" # ---> NEW
+                
+            if end_date is None:
+                end_date = self._parse_date(row.get("ContainmentDateTime"))
+                if end_date is not None: end_date_type = "ContainmentDateTime" # ---> NEW
             
             tasks.append({
                 "fire_id": row.get("UniqueFireIdentifier", f"fire_{idx}"),
                 "name": row.get("IncidentName", "Unknown"),
                 "start": self._parse_date(row.get("FireDiscoveryDateTime")),
-                "end": self._parse_date(row.get("ContainmentDateTime")), 
+                "end": end_date,
+                "end_date_type": end_date_type, # ---> NEW
                 "acres": acres,
                 "bbox": bbox_tuple
             })
